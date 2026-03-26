@@ -115,12 +115,15 @@ setup_account() {
     --hbciversion="$hbci_version"
   success "User registered."
 
-  # Resolve user index: count registered users after adduser; default to 1.
+  # Resolve the Unique Id of the newly added user by matching the login.
   local user_index=1
-  local _user_count
-  if _user_count=$(aqhbci-tool4 listusers 2>/dev/null | grep -c "^User") &&
-     (( _user_count > 0 )); then
-    user_index="$_user_count"
+  local _uid
+  _uid=$(aqhbci-tool4 listusers 2>/dev/null \
+    | grep "User Id: ${login}" \
+    | sed 's/.*Unique Id: //' \
+    | tr -d ' ')
+  if [[ -n "$_uid" ]]; then
+    user_index="$_uid"
   fi
 
   # ── Step 2: getsysid (PIN only, no TAN) ──────────────────────────────────────

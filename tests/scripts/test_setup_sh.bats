@@ -54,7 +54,11 @@ STUB
 #!/bin/bash
 echo "aqhbci-tool4 \$*" >> "${log}"
 case "\$1" in
-  listusers)     echo "" ;;
+  listusers)
+    if grep -q "^aqhbci-tool4 adduser" "${log}" 2>/dev/null; then
+      echo "User 0: Bank: de/12030000 User Id: testuser Customer Id: testuser Unique Id: 1"
+    fi
+    ;;
   adduser)       echo "User added" ;;
   getsysid)      echo "SysID ok" ;;
   listitanmodes) echo "Mode 7940: DKB App TAN" ;;
