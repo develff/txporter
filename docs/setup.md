@@ -1,5 +1,26 @@
 # Setup Guide
 
+## Docker base image
+
+txporter uses **openSUSE Tumbleweed** (`opensuse/tumbleweed`) as its base image.
+
+Rationale (evaluated 2026-03-26):
+
+| Image | AqBanking | Base size | Rolling | glibc |
+|-------|-----------|-----------|---------|-------|
+| openSUSE Tumbleweed | 6.9.1 | 148 MB | yes | yes |
+| Arch Linux | 6.9.1 | 558 MB | yes | yes |
+| Ubuntu 25.10 | 6.6.0 | 135 MB | no | yes |
+
+openSUSE Tumbleweed ships the same AqBanking version as Arch Linux (6.9.1) but
+with a significantly smaller base image. Ubuntu 25.10 is three minor versions
+behind and is not a rolling release. Alpine Linux was ruled out due to musl libc
+compatibility risks with AqBanking's FinTS/TLS stack.
+
+Both `aqbanking-cli` and `aqhbci-tool4` are present and functional in the built
+image. Running `aqbanking-cli listtransactions` requires a configured bank account
+(see initial bank registration below).
+
 ## Prerequisites
 
 - Docker and Docker Compose installed

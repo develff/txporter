@@ -1,15 +1,14 @@
-FROM debian:bookworm-slim
+FROM opensuse/tumbleweed:latest
 
-# Install AqBanking and dependencies
-RUN apt-get update && apt-get install -y \
-    aqbanking-tools \
-    libaqbanking-dev \
-    python3 \
-    python3-pip \
-    python3-flask \
-    python3-requests \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
+# Install AqBanking, Python, and dependencies
+RUN zypper --non-interactive refresh && \
+    zypper --non-interactive install -y \
+        aqbanking \
+        python313 \
+        python313-Flask \
+        python313-requests \
+        curl \
+    && zypper clean --all
 
 # Create non-root user
 RUN useradd -m -s /bin/bash txporter

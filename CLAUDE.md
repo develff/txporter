@@ -45,7 +45,7 @@ PayPal          ────► │                ──► CSV File
 - [x] src/firefly.py — Firefly III API client skeleton
 - [x] config/banks.example.json — example configuration
 - [x] docs/setup.md, docs/configuration.md
-- [ ] Dockerfile: choose base image (Arch vs openSUSE Tumbleweed vs Ubuntu)
+- [x] Dockerfile: openSUSE Tumbleweed (AqBanking 6.9.1, 148 MB base, rolling, glibc)
 - [ ] scripts/setup.sh: interactive AqBanking bank setup script
 - [ ] src/aqbanking.py: implement actual CLI output parsing
 - [ ] src/firefly.py: implement proper transaction mapping to Firefly III API
