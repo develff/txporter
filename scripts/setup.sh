@@ -125,8 +125,7 @@ setup_account() {
 
   # ── Step 2: getsysid (TAN required) ─────────────────────────────────────────
   info "Step 2/8 — Initialising connection (getsysid)..."
-  info "Your banking app will ask you to confirm a TAN."
-  pause "Confirm the TAN in your banking app, then press Enter to proceed..."
+  pause "Press Enter to start — your banking app will ask you to confirm a TAN..."
   aqhbci-tool4 getsysid -u "$user_index"
   success "System ID retrieved."
 
@@ -156,8 +155,7 @@ setup_account() {
 
   # ── Step 6: getaccounts (TAN required) ──────────────────────────────────────
   info "Step 6/8 — Fetching account list from bank (getaccounts)..."
-  info "Your banking app will ask you to confirm another TAN."
-  pause "Confirm the TAN in your banking app, then press Enter to proceed..."
+  pause "Press Enter to start — your banking app will ask you to confirm another TAN..."
   aqhbci-tool4 getaccounts -u "$user_index"
   success "Account list retrieved."
 
