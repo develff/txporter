@@ -1,0 +1,33 @@
+# Config with credentials
+config/banks.json
+config/pinfile
+.env
+
+# Output
+output/
+
+# AqBanking local config (if mounted directly)
+.aqbanking/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

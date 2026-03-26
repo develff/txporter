@@ -1,0 +1,15 @@
+services:
+  txporter:
+    build: .
+    container_name: txporter
+    restart: unless-stopped
+    ports:
+      - "8090:8090"
+    volumes:
+      - txporter_data:/home/txporter/.aqbanking
+      - ./config:/home/txporter/config:ro
+      - ./output:/home/txporter/output
+    env_file: .env
+
+volumes:
+  txporter_data:
