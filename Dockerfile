@@ -4,6 +4,8 @@ FROM opensuse/tumbleweed:latest
 RUN zypper --non-interactive refresh && \
     zypper --non-interactive install -y \
         aqbanking \
+        libgwenhywfar79-plugins \
+        jq \
         python313 \
         python313-Flask \
         python313-requests \

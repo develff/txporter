@@ -14,10 +14,11 @@
       "id": "1822",
       "name": "1822direkt Girokonto",
       "type": "fints",
-      "blz": "50050201",
-      "url": "https://banking.1822direkt.com/banking/FinTS",
+      "blz": "50050222",
+      "url": "https://fints.1822direkt.com/fints/hbci",
       "login": "YOUR_LOGIN",
-      "hbci_version": 300
+      "hbci_version": 300,
+      "tan_mode": 6903
     },
     {
       "id": "paypal",
