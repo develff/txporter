@@ -57,7 +57,7 @@ PayPal          ────► │                ──► CSV File
 | Bank | BLZ | URL | TAN mode |
 |------|-----|-----|----------|
 | DKB | 12030000 | https://fints.dkb.de/fints | 7940 (DKB App) |
-| 1822direkt | 50050201 | https://banking.1822direkt.com/banking/FinTS | pushTAN |
+| 1822direkt | 50050222 | https://fints.1822direkt.com/fints/hbci | pushTAN (read-only since 2025-09-16) |
 | Consorsbank | 76030080 | https://fin.consorsbank.de/auth | pushTAN (URL unverified) |
 
 ## AqBanking setup flow (per bank, one-time interactive)

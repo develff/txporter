@@ -123,9 +123,9 @@ setup_account() {
     user_index="$_user_count"
   fi
 
-  # ── Step 2: getsysid (TAN required) ─────────────────────────────────────────
+  # ── Step 2: getsysid (PIN only, no TAN) ──────────────────────────────────────
   info "Step 2/8 — Initialising connection (getsysid)..."
-  pause "Press Enter to start — your banking app will ask you to confirm a TAN..."
+  pause "Press Enter to start — you will be prompted for your PIN..."
   aqhbci-tool4 getsysid -u "$user_index"
   success "System ID retrieved."
 
