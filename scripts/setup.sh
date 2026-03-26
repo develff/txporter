@@ -115,9 +115,13 @@ setup_account() {
     --hbciversion="$hbci_version"
   success "User registered."
 
-  # Resolve user index: count existing users (newly added user is last).
-  local user_index
-  user_index=$(aqhbci-tool4 listusers 2>/dev/null | grep -c "^User" || echo "1")
+  # Resolve user index: count registered users after adduser; default to 1.
+  local user_index=1
+  local _user_count
+  if _user_count=$(aqhbci-tool4 listusers 2>/dev/null | grep -c "^User") &&
+     (( _user_count > 0 )); then
+    user_index="$_user_count"
+  fi
 
   # ── Step 2: getsysid (TAN required) ─────────────────────────────────────────
   info "Step 2/8 — Initialising connection (getsysid)..."
@@ -192,7 +196,13 @@ main() {
 
   local errors=0
 
-  while IFS= read -r account; do
+  # Use fd 3 for account iteration so fd 0 (stdin) stays connected to the
+  # user's terminal for pause prompts and TAN-mode input inside setup_account.
+  local accounts_file
+  accounts_file=$(mktemp)
+  echo "$accounts" > "$accounts_file"
+
+  while IFS= read -r -u 3 account; do
     local name blz url login hbci_version tan_mode
     name=$(echo "$account"         | jq -r '.name')
     blz=$(echo "$account"          | jq -r '.blz')
@@ -207,7 +217,8 @@ main() {
       error "Setup failed for: ${name}"
       errors=$((errors + 1))
     fi
-  done <<< "$accounts"
+  done 3< "$accounts_file"
+  rm -f "$accounts_file"
 
   echo ""
   if [[ $errors -eq 0 ]]; then

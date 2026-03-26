@@ -10,41 +10,61 @@ CONFIG_WITH_FINTS='{"accounts":[{"id":"dkb","name":"DKB","type":"fints","blz":"1
 CONFIG_NO_FINTS='{"accounts":[{"id":"paypal","name":"PayPal","type":"paypal","login":"user@example.com"}],"targets":{}}'
 CONFIG_NO_TAN_MODE='{"accounts":[{"id":"dkb","name":"DKB","type":"fints","blz":"12030000","url":"https://fints.dkb.de/fints","login":"testuser","hbci_version":300}],"targets":{}}'
 
-# Write a temporary config file and set CONFIG_FILE.
+# Write a temporary config file.
 make_config() {
   local content="$1"
-  local path="${BATS_TMPDIR}/banks_$$.json"
+  local path="${BATS_TEST_TMPDIR}/banks.json"
   echo "$content" > "$path"
   echo "$path"
 }
 
+# Write a BASH_ENV file that overrides 'command -v <tool>' to simulate missing.
+# Usage: make_missing_env <tool> <output_path>
+make_missing_env() {
+  local tool="$1"
+  local env_file="$2"
+  cat > "$env_file" <<EOF
+command() {
+  if [[ "\$1" == "-v" && "\$2" == "${tool}" ]]; then
+    return 1
+  fi
+  builtin command "\$@"
+}
+export -f command
+EOF
+}
+
 # Stub PATH to intercept aqhbci-tool4 and jq calls.
+# Uses BATS_TEST_TMPDIR (unique per test) so tests never share a calls log.
 setup_stubs() {
-  STUB_DIR="${BATS_TMPDIR}/stubs_$$"
+  STUB_DIR="${BATS_TEST_TMPDIR}/stubs"
   mkdir -p "$STUB_DIR"
 
   # jq stub — delegate to real jq
-  cat > "${STUB_DIR}/jq" <<'EOF'
+  cat > "${STUB_DIR}/jq" <<'STUB'
 #!/bin/bash
 exec /usr/bin/jq "$@"
-EOF
+STUB
 
-  # aqhbci-tool4 stub — records calls and simulates success
-  cat > "${STUB_DIR}/aqhbci-tool4" <<'EOF'
+  # aqhbci-tool4 stub — records calls and simulates success.
+  # STUB_DIR is expanded *now* (unquoted heredoc) so the absolute path is baked
+  # into the stub file; no env variable needed at stub runtime.
+  local log="${STUB_DIR}/calls.log"
+  cat > "${STUB_DIR}/aqhbci-tool4" <<STUB
 #!/bin/bash
-echo "aqhbci-tool4 $*" >> "${STUB_DIR}/calls.log"
-case "$1" in
-  listusers)    echo "" ;;           # no existing users
-  adduser)      echo "User added" ;;
-  getsysid)     echo "SysID ok" ;;
+echo "aqhbci-tool4 \$*" >> "${log}"
+case "\$1" in
+  listusers)     echo "" ;;
+  adduser)       echo "User added" ;;
+  getsysid)      echo "SysID ok" ;;
   listitanmodes) echo "Mode 7940: DKB App TAN" ;;
-  setitanmode)  echo "TAN mode set" ;;
-  getaccounts)  echo "Accounts fetched" ;;
-  listaccounts) echo "Account: DE12300000001234567890" ;;
-  getaccsepa)   echo "SEPA ok" ;;
-  *)            echo "Unknown command: $1" >&2; exit 1 ;;
+  setitanmode)   echo "TAN mode set" ;;
+  getaccounts)   echo "Accounts fetched" ;;
+  listaccounts)  echo "Account: DE12300000001234567890" ;;
+  getaccsepa)    echo "SEPA ok" ;;
+  *)             echo "Unknown command: \$1" >&2; exit 1 ;;
 esac
-EOF
+STUB
 
   chmod +x "${STUB_DIR}/jq" "${STUB_DIR}/aqhbci-tool4"
   export PATH="${STUB_DIR}:${PATH}"
@@ -54,31 +74,26 @@ EOF
 # ── Tests ──────────────────────────────────────────────────────────────────────
 
 @test "exits with error when jq is missing" {
-  STUB_DIR="${BATS_TMPDIR}/nojq_$$"
-  mkdir -p "$STUB_DIR"
-  # provide aqhbci-tool4 but NOT jq
-  cat > "${STUB_DIR}/aqhbci-tool4" <<'EOF'
-#!/bin/bash
-EOF
-  chmod +x "${STUB_DIR}/aqhbci-tool4"
+  local env_file="${BATS_TEST_TMPDIR}/missing_jq.sh"
+  make_missing_env "jq" "$env_file"
+  # Also provide a stub aqhbci-tool4 so the script does not fail on that check
+  local stub_dir="${BATS_TEST_TMPDIR}/stubs"
+  mkdir -p "$stub_dir"
+  printf '#!/bin/bash\necho stub\n' > "${stub_dir}/aqhbci-tool4"
+  chmod +x "${stub_dir}/aqhbci-tool4"
 
   cfg=$(make_config "$CONFIG_WITH_FINTS")
-  run env PATH="${STUB_DIR}" bash "$SCRIPT" --config "$cfg"
+  run env BASH_ENV="$env_file" PATH="${stub_dir}:${PATH}" bash "$SCRIPT" --config "$cfg"
   [ "$status" -ne 0 ]
   [[ "$output" == *"jq"* ]]
 }
 
 @test "exits with error when aqhbci-tool4 is missing" {
-  STUB_DIR="${BATS_TMPDIR}/noaqb_$$"
-  mkdir -p "$STUB_DIR"
-  cat > "${STUB_DIR}/jq" <<'EOF'
-#!/bin/bash
-exec /usr/bin/jq "$@"
-EOF
-  chmod +x "${STUB_DIR}/jq"
+  local env_file="${BATS_TEST_TMPDIR}/missing_aqb.sh"
+  make_missing_env "aqhbci-tool4" "$env_file"
 
   cfg=$(make_config "$CONFIG_WITH_FINTS")
-  run env PATH="${STUB_DIR}" bash "$SCRIPT" --config "$cfg"
+  run env BASH_ENV="$env_file" bash "$SCRIPT" --config "$cfg"
   [ "$status" -ne 0 ]
   [[ "$output" == *"aqhbci-tool4"* ]]
 }
@@ -93,8 +108,7 @@ EOF
 @test "--config flag overrides default path" {
   setup_stubs
   cfg=$(make_config "$CONFIG_NO_FINTS")
-  # Should succeed (0 FinTS accounts → warning + exit 0)
-  run bash "$SCRIPT" --config "$cfg" <<< ""
+  run bash "$SCRIPT" --config "$cfg"
   [ "$status" -eq 0 ]
   [[ "$output" == *"No FinTS accounts"* ]]
 }
@@ -105,49 +119,50 @@ EOF
   run bash "$SCRIPT" --config "$cfg"
   [ "$status" -eq 0 ]
   [[ "$output" == *"No FinTS accounts"* ]]
-  # aqhbci-tool4 should never have been called for setup
-  [[ ! -f "${STUB_DIR}/calls.log" ]] || ! grep -q "adduser" "${STUB_DIR}/calls.log"
+  local log="${STUB_DIR}/calls.log"
+  [[ ! -f "$log" ]] || ! grep -q "adduser" "$log"
 }
 
 @test "all 8 aqhbci-tool4 steps are called for a new FinTS account" {
   setup_stubs
   cfg=$(make_config "$CONFIG_WITH_FINTS")
-  # Provide Enter presses for pause prompts and TAN mode prompt (default 7940)
   run bash "$SCRIPT" --config "$cfg" <<< $'\n\n\n'
   [ "$status" -eq 0 ]
-  grep -q "adduser"      "${STUB_DIR}/calls.log"
-  grep -q "getsysid"     "${STUB_DIR}/calls.log"
-  grep -q "listitanmodes" "${STUB_DIR}/calls.log"
-  grep -q "setitanmode"  "${STUB_DIR}/calls.log"
-  grep -q "getaccounts"  "${STUB_DIR}/calls.log"
-  grep -q "listaccounts" "${STUB_DIR}/calls.log"
-  grep -q "getaccsepa"   "${STUB_DIR}/calls.log"
+  local log="${STUB_DIR}/calls.log"
+  grep -q "adduser"       "$log"
+  grep -q "getsysid"      "$log"
+  grep -q "listitanmodes" "$log"
+  grep -q "setitanmode"   "$log"
+  grep -q "getaccounts"   "$log"
+  grep -q "listaccounts"  "$log"
+  grep -q "getaccsepa"    "$log"
 }
 
 @test "skips account that is already registered" {
   setup_stubs
-  # Override listusers to return the login so account_already_registered returns true
-  cat > "${STUB_DIR}/aqhbci-tool4" <<'EOF'
+  local log="${STUB_DIR}/calls.log"
+
+  # Override stub: listusers returns the login → account_already_registered = true
+  cat > "${STUB_DIR}/aqhbci-tool4" <<STUB
 #!/bin/bash
-echo "aqhbci-tool4 $*" >> "${STUB_DIR}/calls.log"
-case "$1" in
+echo "aqhbci-tool4 \$*" >> "${log}"
+case "\$1" in
   listusers) echo "User testuser" ;;
   *)         ;;
 esac
-EOF
+STUB
   chmod +x "${STUB_DIR}/aqhbci-tool4"
 
   cfg=$(make_config "$CONFIG_WITH_FINTS")
   run bash "$SCRIPT" --config "$cfg"
   [ "$status" -eq 0 ]
   [[ "$output" == *"skipping"* ]]
-  ! grep -q "adduser" "${STUB_DIR}/calls.log" 2>/dev/null
+  ! grep -q "adduser" "$log" 2>/dev/null
 }
 
 @test "uses tan_mode from config as default in prompt" {
   setup_stubs
   cfg=$(make_config "$CONFIG_WITH_FINTS")
-  # Just press Enter to accept the default TAN mode (7940)
   run bash "$SCRIPT" --config "$cfg" <<< $'\n\n\n'
   [ "$status" -eq 0 ]
   grep -q "setitanmode.*7940" "${STUB_DIR}/calls.log"
@@ -156,7 +171,6 @@ EOF
 @test "prompts for TAN mode when not set in config" {
   setup_stubs
   cfg=$(make_config "$CONFIG_NO_TAN_MODE")
-  # Provide TAN mode interactively + Enter presses for pauses
   run bash "$SCRIPT" --config "$cfg" <<< $'\n9999\n\n'
   [ "$status" -eq 0 ]
   grep -q "setitanmode.*9999" "${STUB_DIR}/calls.log"
