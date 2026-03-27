@@ -3,6 +3,7 @@ txporter - AqBanking CLI wrapper
 Fetches transactions from financial accounts using AqBanking.
 """
 
+import os
 import re
 import subprocess
 import logging
@@ -11,37 +12,42 @@ from urllib.parse import unquote
 
 logger = logging.getLogger(__name__)
 
+PINFILE = os.environ.get("TXPORTER_PINFILE", "/home/txporter/config/pinfile")
 
-def _decode_amount_minor_units(raw: str) -> tuple[int, str]:
-    """Decode a CTX amount value into (minor_units: int, currency: str).
+
+def _decode_amount_eur(raw: str) -> tuple[float, str]:
+    """Decode a CTX amount value into (amount_eur: float, currency: str).
 
     Handles three formats after URL-decoding:
-      "-3776:EUR"    → (-3776, "EUR")
-      "-25/10:EUR"   → (-25, "EUR")   fraction: numerator is the minor-unit value
-      "1:EUR"        → (1, "EUR")
+      "32:EUR"       → (32.0, "EUR")    simple: integer EUR value
+      "-3776/100:EUR"→ (-37.76, "EUR")  fraction: numerator/denominator in EUR
+      "-25/10:EUR"   → (-2.5, "EUR")    fraction: -25/10 = -€2.50
     """
     decoded = unquote(raw)
     colon_idx = decoded.rfind(":")
+    if colon_idx == -1:
+        logger.warning("CTX amount has no currency suffix, skipping: %s", raw)
+        return 0.0, ""
     currency = decoded[colon_idx + 1:]
     amount_part = decoded[:colon_idx]
     if "/" in amount_part:
-        numerator = int(amount_part.split("/")[0])
-        return numerator, currency
-    return int(amount_part), currency
+        numerator, denominator = amount_part.split("/", 1)
+        return int(numerator) / int(denominator), currency
+    return float(amount_part), currency
 
 
-def _external_id(local_account: str, date: str, minor_units: int, currency: str,
+def _external_id(local_account: str, date: str, amount_eur: float, currency: str,
                  bank_reference: str, primanota: str) -> str:
-    parts = ["aqbanking", "fints", local_account, date, f"{minor_units}:{currency}"]
+    parts = ["aqbanking", "fints", local_account, date, f"{amount_eur:.2f}:{currency}"]
     if bank_reference:
         parts.append(bank_reference)
     if primanota and primanota != "0":
         parts.append(primanota)
     if not bank_reference and (not primanota or primanota == "0"):
         logger.warning(
-            "Transaction on %s for %s:%s has neither bankReference nor primanota — "
+            "Transaction on %s for %.2f:%s has neither bankReference nor primanota — "
             "external_id may not be unique",
-            date, minor_units, currency,
+            date, amount_eur, currency,
         )
     return ":".join(parts)
 
@@ -50,7 +56,7 @@ def _parse_ctx(output: str) -> list[dict]:
     """Parse AqBanking CTX output into a list of neutral transaction dicts.
 
     Each dict contains URL-decoded CTX fields plus a computed external_id.
-    Amount is represented as (amount_minor_units: int, currency_code: str).
+    Amount is represented as (amount_eur: float, currency_code: str).
     """
     transactions = []
 
@@ -65,14 +71,14 @@ def _parse_ctx(output: str) -> list[dict]:
         if not raw_value:
             continue
 
-        minor_units, currency = _decode_amount_minor_units(raw_value.group(1))
+        amount_eur, currency = _decode_amount_eur(raw_value.group(1))
         local_account = field("localAccountNumber")
         date = field("date")
         bank_reference = field("bankReference")
         primanota = field("primanota")
 
         tx = {
-            "external_id": _external_id(local_account, date, minor_units, currency,
+            "external_id": _external_id(local_account, date, amount_eur, currency,
                                          bank_reference, primanota),
             "type": field("type"),
             "sub_type": field("subType"),
@@ -94,7 +100,7 @@ def _parse_ctx(output: str) -> list[dict]:
             "remote_name": field("remoteName"),
             "date": date,
             "valuta_date": field("valutaDate"),
-            "amount_minor_units": minor_units,
+            "amount_eur": amount_eur,
             "currency_code": currency,
             "transaction_code": field("transactionCode"),
             "transaction_text": field("transactionText"),
@@ -123,34 +129,35 @@ class AqBankingClient:
         self.account = account
 
     def fetch_transactions(self, days: int = 30) -> list:
-        """Fetch transactions for the last N days."""
+        """Fetch transactions for the last N days (non-FinTS accounts only)."""
         account_type = self.account.get("type", "fints")
-        if account_type == "fints":
-            return self._fetch_fints(days)
-        elif account_type == "paypal":
+        if account_type == "paypal":
             return self._fetch_paypal(days)
-        else:
-            raise ValueError(f"Unsupported account type: {account_type}")
+        raise ValueError(f"Use start_fetch/complete_fetch for account type: {account_type}")
 
-    def _fetch_fints(self, days: int) -> list:
-        """Fetch transactions via FinTS using aqbanking-cli."""
+    def start_fetch(self, days: int = 30):
+        """Start a FinTS transaction request; returns a Popen handle waiting for TAN confirmation."""
         from_date = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
-        account_id = self.account["id"]
+        account_id = str(self.account["aqbanking_id"])
 
         cmd = [
-            "aqbanking-cli", "request",
-            "--account", account_id,
-            "--fromdate", from_date,
+            "aqbanking-cli",
+            f"--pinfile={PINFILE}",
+            "request",
+            f"--aid={account_id}",
+            f"--fromdate={from_date}",
             "--transactions"
         ]
 
         logger.info(f"Running: {' '.join(cmd)}")
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        return subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
-        if result.returncode != 0:
-            raise RuntimeError(f"aqbanking-cli failed: {result.stderr}")
-
-        return _parse_ctx(result.stdout)
+    def complete_fetch(self, proc, timeout: int = 60) -> list:
+        """Confirm TAN approval and wait for aqbanking-cli to return results."""
+        stdout, stderr = proc.communicate(input="1\n", timeout=timeout)
+        if proc.returncode != 0:
+            raise RuntimeError(f"aqbanking-cli failed: {stderr}")
+        return _parse_ctx(stdout)
 
     def _fetch_paypal(self, days: int) -> list:
         """Fetch transactions via AqBanking PayPal backend."""
