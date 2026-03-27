@@ -86,6 +86,7 @@ aqhbci-tool4 getaccsepa -a ACCOUNT_ID
 4. ~~Implement aqbanking.py CTX output parsing~~ — done (issue #5)
 5. ~~Implement firefly.py transaction mapping to Firefly III storeTransaction API~~ — done (issue #7)
 6. ~~End-to-end test: DKB → txporter → Firefly III~~ — done, amounts and deposit/withdrawal mapping correct
+7. ~~Skip zero-amount (pending/reserved) transactions~~ — done (issue #11)
 
 ## Development Guidelines
 
