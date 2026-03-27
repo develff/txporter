@@ -82,6 +82,9 @@ class FireflyClient:
     def _create_transaction(self, tx: dict, account: dict):
         """Create a single transaction in Firefly III."""
         amount_eur = tx.get("amount_eur", 0.0)
+        if amount_eur == 0.0:
+            logger.debug("Skipping zero-amount transaction external_id=%s", tx.get("external_id"))
+            return
         is_withdrawal = amount_eur < 0
         tx_type = "withdrawal" if is_withdrawal else "deposit"
         amount = f"{abs(amount_eur):.2f}"
