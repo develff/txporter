@@ -11,7 +11,7 @@ CONFIG = {"url": "https://firefly.example.com", "token": "secret"}
 
 def make_tx(**overrides) -> dict:
     base = {
-        "external_id": "aqbanking:fints:1000000088:20250401:-20:EUR:REF-0001:7000",
+        "external_id": "aqbanking:fints:1000000088:20250401:-20.00:EUR:REF-0001:7000",
         "type": "statement",
         "sub_type": "none",
         "command": "none",
@@ -32,7 +32,7 @@ def make_tx(**overrides) -> dict:
         "remote_name": "Max Mustermann",
         "date": "20250401",
         "valuta_date": "20250401",
-        "amount_minor_units": -20,
+        "amount_eur": -20.0,
         "currency_code": "EUR",
         "transaction_code": "",
         "transaction_text": "DAUERAUFTRAG",
@@ -115,28 +115,28 @@ class TestFireflyClientCreateTransaction:
 
     def test_withdrawal_type(self):
         client = self._make_client()
-        tx = make_tx(amount_minor_units=-20)
+        tx = make_tx(amount_eur=-20.0)
         mock_post = self._post(client, tx)
         payload = mock_post.call_args.kwargs["json"]
         assert payload["transactions"][0]["type"] == "withdrawal"
 
     def test_deposit_type(self):
         client = self._make_client()
-        tx = make_tx(amount_minor_units=100)
+        tx = make_tx(amount_eur=1.0)
         mock_post = self._post(client, tx)
         payload = mock_post.call_args.kwargs["json"]
         assert payload["transactions"][0]["type"] == "deposit"
 
-    def test_amount_conversion_minor_units(self):
+    def test_amount_formatting(self):
         client = self._make_client()
-        tx = make_tx(amount_minor_units=-3776)
+        tx = make_tx(amount_eur=-37.76)
         mock_post = self._post(client, tx)
         payload = mock_post.call_args.kwargs["json"]
         assert payload["transactions"][0]["amount"] == "37.76"
 
     def test_amount_is_positive_for_withdrawal(self):
         client = self._make_client()
-        tx = make_tx(amount_minor_units=-20)
+        tx = make_tx(amount_eur=-20.0)
         mock_post = self._post(client, tx)
         payload = mock_post.call_args.kwargs["json"]
         split = payload["transactions"][0]
@@ -144,7 +144,7 @@ class TestFireflyClientCreateTransaction:
 
     def test_amount_is_positive_for_deposit(self):
         client = self._make_client()
-        tx = make_tx(amount_minor_units=1)
+        tx = make_tx(amount_eur=1.0)
         mock_post = self._post(client, tx)
         payload = mock_post.call_args.kwargs["json"]
         split = payload["transactions"][0]
@@ -209,13 +209,13 @@ class TestFireflyClientCreateTransaction:
         assert "local_bank_code: 12030000" in notes
         assert "remote_iban: DE00100000000000000001" in notes
 
-    def test_duplicate_422_is_skipped(self, caplog):
+    def test_error_logged_on_422(self, caplog):
         import logging
         client = self._make_client()
         tx = make_tx()
-        with caplog.at_level(logging.INFO, logger="src.firefly"):
+        with caplog.at_level(logging.ERROR, logger="src.firefly"):
             self._post(client, tx, status_code=422)
-        assert "Skipping duplicate" in caplog.text
+        assert "Failed to create transaction" in caplog.text
 
     def test_error_logged_on_failure(self, caplog):
         import logging
@@ -224,3 +224,12 @@ class TestFireflyClientCreateTransaction:
         with caplog.at_level(logging.ERROR, logger="src.firefly"):
             self._post(client, tx, status_code=500)
         assert "Failed to create transaction" in caplog.text
+
+    def test_zero_amount_is_skipped(self, caplog):
+        import logging
+        client = self._make_client()
+        tx = make_tx(amount_eur=0.0)
+        with caplog.at_level(logging.DEBUG, logger="src.firefly"):
+            mock_post = self._post(client, tx)
+        mock_post.assert_not_called()
+        assert "zero-amount" in caplog.text
