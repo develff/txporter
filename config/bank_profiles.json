@@ -1,0 +1,14 @@
+{
+  "dkb": {
+    "blz": "12030000",
+    "url": "https://fints.dkb.de/fints",
+    "hbci_version": 300,
+    "tan_mode": 7940
+  },
+  "1822direkt": {
+    "blz": "50050222",
+    "url": "https://fints.1822direkt.com/fints/hbci",
+    "hbci_version": 300,
+    "tan_mode": 6903
+  }
+}
