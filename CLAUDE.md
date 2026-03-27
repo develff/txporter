@@ -46,9 +46,9 @@ PayPal          ────► │                ──► CSV File
 - [x] config/banks.example.json — example configuration
 - [x] docs/setup.md, docs/configuration.md
 - [x] Dockerfile: openSUSE Tumbleweed (AqBanking 6.9.1, 148 MB base, rolling, glibc)
-- [ ] scripts/setup.sh: interactive AqBanking bank setup script
-- [ ] src/aqbanking.py: implement actual CLI output parsing
-- [ ] src/firefly.py: implement proper transaction mapping to Firefly III API
+- [x] scripts/setup.sh: interactive AqBanking bank setup script
+- [x] src/aqbanking.py: implement CTX output parsing (all fields, external_id, tests)
+- [ ] src/firefly.py: implement proper transaction mapping to Firefly III API (storeTransaction)
 - [ ] First working Docker build
 - [ ] First real DKB sync test
 
@@ -80,11 +80,11 @@ aqhbci-tool4 getaccsepa -a ACCOUNT_ID
 
 ## Next steps (priority order)
 
-1. Choose and test Docker base image — check AqBanking version availability
-2. Get Docker build working
-3. Implement scripts/setup.sh for interactive bank registration
-4. Implement aqbanking.py output parsing (test with real DKB account)
-5. Implement firefly.py transaction mapping
+1. ~~Choose and test Docker base image~~ — done (openSUSE Tumbleweed)
+2. ~~Get Docker build working~~ — Dockerfile in place
+3. ~~Implement scripts/setup.sh for interactive bank registration~~ — done
+4. ~~Implement aqbanking.py CTX output parsing~~ — done (issue #5)
+5. Implement firefly.py transaction mapping to Firefly III storeTransaction API
 6. End-to-end test: DKB → txporter → Firefly III
 
 ## Development Guidelines
