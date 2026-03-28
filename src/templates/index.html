@@ -648,6 +648,8 @@ function buildSyncBody() {
   const body = {};
   if (syncOpts.fromDate) { body.from_date = syncOpts.fromDate; body.to_date = syncOpts.toDate || undefined; }
   else body.days = syncOpts.days || 30;
+  const fmt = syncOpts.exportTarget;
+  if (fmt === "csv" || fmt === "json") body.export_format = fmt;
   return body;
 }
 
@@ -686,7 +688,12 @@ async function startSync(accountId) {
     if (r.status === "pending") {
       showModal(syncWaitingScreen(accountId, true));
     } else if (r.status === "ok") {
-      showModal(syncResultScreen(r, null));
+      if (r.export_format) {
+        triggerDownload(r.transactions, r.export_format, accountId);
+        showModal(syncExportScreen(r.transactions.length, r.export_format));
+      } else {
+        showModal(syncResultScreen(r, null));
+      }
       await loadAccounts();
     } else {
       showModal(syncResultScreen(null, r.message || "Unknown error"));
@@ -871,7 +878,12 @@ async function runSyncAll() {
       if (r.status === "pending") {
         statusMap[a.id].status = "pending";
       } else if (r.status === "ok") {
-        statusMap[a.id] = { ...statusMap[a.id], status: "ok", ...r };
+        if (r.export_format) {
+          triggerDownload(r.transactions, r.export_format, a.id);
+          statusMap[a.id] = { ...statusMap[a.id], status: "ok", found: r.transactions.length, imported: r.transactions.length };
+        } else {
+          statusMap[a.id] = { ...statusMap[a.id], status: "ok", ...r };
+        }
         _save_last_sync_ui(a.id);
       } else {
         statusMap[a.id] = { ...statusMap[a.id], status: "error", message: r.message };

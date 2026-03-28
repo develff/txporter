@@ -5,6 +5,7 @@ Imports transactions into Firefly III via REST API.
 
 import requests
 import logging
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -61,8 +62,12 @@ class FireflyClient:
         currency = transactions[0].get("currency_code", "EUR")
         account_name = account.get("name", "")
         firefly_account_id = self._ensure_asset_account(account_name, currency)
-        existing_ids = self._fetch_existing_external_ids(firefly_account_id)
-        logger.info("Firefly account '%s': %d existing external_ids loaded", account_name, len(existing_ids))
+        start_date = self._dedup_start_date(transactions)
+        existing_ids = self._fetch_existing_external_ids(firefly_account_id, start_date=start_date)
+        logger.info(
+            "Firefly account '%s': %d existing external_ids loaded (from %s)",
+            account_name, len(existing_ids), start_date or "beginning",
+        )
 
         for tx in transactions:
             ext_id = tx.get("external_id", "")
@@ -110,17 +115,45 @@ class FireflyClient:
             logger.error("Failed to create asset account %s: %s", name, resp.text)
             return None
 
-    def _fetch_existing_external_ids(self, firefly_account_id: str | None) -> set:
-        """Fetch all external_ids of existing transactions for the given asset account."""
+    @staticmethod
+    def _dedup_start_date(transactions: list, buffer_days: int = 7) -> str | None:
+        """Return a Firefly-compatible start date (YYYY-MM-DD) for the dedup query.
+
+        Takes the earliest transaction date in the batch and subtracts buffer_days
+        to catch transactions that the bank may report with a slightly earlier date
+        than the requested sync window.
+        """
+        dates = [tx["date"] for tx in transactions if tx.get("date")]
+        if not dates:
+            return None
+        min_date = min(dates)  # YYYYMMDD
+        try:
+            dt = datetime.strptime(min_date, "%Y%m%d") - timedelta(days=buffer_days)
+            return dt.strftime("%Y-%m-%d")
+        except ValueError:
+            logger.warning("Could not parse transaction date '%s', fetching all external_ids", min_date)
+            return None
+
+    def _fetch_existing_external_ids(self, firefly_account_id: str | None,
+                                     start_date: str | None = None) -> set:
+        """Fetch external_ids of existing transactions for the given asset account.
+
+        start_date (YYYY-MM-DD): if provided, only transactions on or after this date
+        are queried — sufficient for dedup within a bounded sync window and much faster
+        than fetching the full history.
+        """
         if firefly_account_id is None:
             return set()
         external_ids = set()
         page = 1
+        params_base = {"limit": 100}
+        if start_date:
+            params_base["start"] = start_date
         while True:
             response = requests.get(
                 f"{self.base_url}/api/v1/accounts/{firefly_account_id}/transactions",
                 headers=self.headers,
-                params={"limit": 100, "page": page},
+                params={**params_base, "page": page},
             )
             if not response.ok:
                 logger.warning("Could not fetch transactions for account %s (page %d): %s",

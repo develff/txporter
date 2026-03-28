@@ -83,9 +83,65 @@ class TestSyncConfirmDryRun:
         assert resp.get_json()["status"] == "ok"
         mock_fwd.assert_called_once()
 
+    def test_export_format_json_returns_transactions(self, sync_client):
+        self._inject_pending_sync(SAMPLE_TRANSACTIONS)
+        resp = sync_client.post("/sync/consorsbank/confirm?export_format=json")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["status"] == "ok"
+        assert data["export_format"] == "json"
+        assert len(data["transactions"]) == 1
+
+    def test_export_format_csv_does_not_forward_to_targets(self, sync_client):
+        self._inject_pending_sync(SAMPLE_TRANSACTIONS)
+        with patch("src.server._forward_to_targets") as mock_fwd:
+            resp = sync_client.post("/sync/consorsbank/confirm?export_format=csv")
+        assert resp.status_code == 200
+        mock_fwd.assert_not_called()
+
     def test_unknown_account_returns_404(self, sync_client):
         resp = sync_client.post("/sync/unknown/confirm?dry_run=true")
         assert resp.status_code == 404
+
+
+class TestStartSyncExportFormat:
+    """Tests for export_format in the no-TAN (inline) sync path."""
+
+    def _mock_no_tan_sync(self, sync_client, export_format_body=None):
+        import src.server as server_mod
+        mock_client = MagicMock()
+        mock_client.start_fetch.return_value = {"status": "ok", "transactions": SAMPLE_TRANSACTIONS}
+
+        with patch("src.server.AqBankingClient", return_value=mock_client):
+            body = {}
+            if export_format_body:
+                body["export_format"] = export_format_body
+            resp = sync_client.post(
+                "/sync/consorsbank",
+                data=__import__("json").dumps(body),
+                content_type="application/json",
+            )
+        return resp
+
+    def test_no_tan_json_export_returns_transactions(self, sync_client):
+        resp = self._mock_no_tan_sync(sync_client, export_format_body="json")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["status"] == "ok"
+        assert data["export_format"] == "json"
+        assert len(data["transactions"]) == 1
+
+    def test_no_tan_csv_export_skips_targets(self, sync_client):
+        with patch("src.server._forward_to_targets") as mock_fwd:
+            resp = self._mock_no_tan_sync(sync_client, export_format_body="csv")
+        assert resp.status_code == 200
+        mock_fwd.assert_not_called()
+
+    def test_no_tan_no_export_format_forwards_to_targets(self, sync_client):
+        with patch("src.server._forward_to_targets", return_value={}) as mock_fwd:
+            resp = self._mock_no_tan_sync(sync_client, export_format_body=None)
+        assert resp.status_code == 200
+        mock_fwd.assert_called_once()
 
 
 class TestWebUI:

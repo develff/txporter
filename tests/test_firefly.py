@@ -233,3 +233,42 @@ class TestFireflyClientCreateTransaction:
             mock_post = self._post(client, tx)
         mock_post.assert_not_called()
         assert "zero-amount" in caplog.text
+
+
+class TestDedupStartDate:
+    def test_returns_min_date_minus_buffer(self):
+        txs = [make_tx(date="20260301"), make_tx(date="20260215"), make_tx(date="20260310")]
+        result = FireflyClient._dedup_start_date(txs, buffer_days=7)
+        assert result == "2026-02-08"  # 20260215 - 7 days
+
+    def test_empty_transactions_returns_none(self):
+        assert FireflyClient._dedup_start_date([]) is None
+
+    def test_transactions_without_date_returns_none(self):
+        assert FireflyClient._dedup_start_date([{"amount_eur": 1.0}]) is None
+
+    def test_default_buffer_is_seven_days(self):
+        txs = [make_tx(date="20260101")]
+        result = FireflyClient._dedup_start_date(txs)
+        assert result == "2025-12-25"  # 20260101 - 7 days
+
+    def test_fetch_uses_start_date_param(self):
+        """_fetch_existing_external_ids passes start_date to the Firefly API."""
+        client = FireflyClient(CONFIG)
+        mock_resp = MagicMock()
+        mock_resp.ok = True
+        mock_resp.json.return_value = {"data": [], "meta": {"pagination": {"total_pages": 1}}}
+        with patch("src.firefly.requests.get", return_value=mock_resp) as mock_get:
+            client._fetch_existing_external_ids("42", start_date="2026-02-08")
+        call_params = mock_get.call_args.kwargs["params"]
+        assert call_params["start"] == "2026-02-08"
+
+    def test_fetch_without_start_date_omits_param(self):
+        client = FireflyClient(CONFIG)
+        mock_resp = MagicMock()
+        mock_resp.ok = True
+        mock_resp.json.return_value = {"data": [], "meta": {"pagination": {"total_pages": 1}}}
+        with patch("src.firefly.requests.get", return_value=mock_resp) as mock_get:
+            client._fetch_existing_external_ids("42")
+        call_params = mock_get.call_args.kwargs["params"]
+        assert "start" not in call_params

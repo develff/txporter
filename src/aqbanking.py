@@ -163,7 +163,7 @@ class AqBankingClient:
         from_date / to_date: YYYY-MM-DD or YYYYMMDD strings (optional).
         If omitted, defaults to the last `days` days.
         """
-        if from_date is None:
+        if not from_date:
             from_date = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
         else:
             from_date = from_date.replace("-", "")

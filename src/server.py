@@ -44,9 +44,9 @@ def sync_all():
     Optional body: { "from_date": "YYYY-MM-DD", "to_date": "YYYY-MM-DD", "days": 30 }
     """
     body = request.get_json(force=True, silent=True) or {}
-    from_date = body.get("from_date")
-    to_date = body.get("to_date")
-    days = int(body.get("days", 30))
+    from_date = body.get("from_date") or None
+    to_date = body.get("to_date") or None
+    days = int(body.get("days") or 30)
     results = {}
     for account in config["accounts"]:
         if not account.get("aqbanking_id"):
@@ -62,16 +62,18 @@ def sync_all():
 def sync_one(account_id):
     """Start sync for a single account by ID.
 
-    Optional body: { "from_date": "YYYY-MM-DD", "to_date": "YYYY-MM-DD", "days": 30 }
+    Optional body: { "from_date": "YYYY-MM-DD", "to_date": "YYYY-MM-DD", "days": 30,
+                     "export_format": "json"|"csv" }
     """
     account = next((a for a in config["accounts"] if a["id"] == account_id), None)
     if not account:
         return jsonify({"error": f"Account '{account_id}' not found"}), 404
     body = request.get_json(force=True, silent=True) or {}
-    from_date = body.get("from_date")
-    to_date = body.get("to_date")
-    days = int(body.get("days", 30))
-    return jsonify(start_sync(account, from_date=from_date, to_date=to_date, days=days))
+    from_date = body.get("from_date") or None
+    to_date = body.get("to_date") or None
+    days = int(body.get("days") or 30)
+    export_format = body.get("export_format", "").lower() or None
+    return jsonify(start_sync(account, from_date=from_date, to_date=to_date, days=days, export_format=export_format))
 
 
 @app.route("/sync/<account_id>/confirm", methods=["POST"])
@@ -487,13 +489,17 @@ def status():
     return jsonify({"status": "not implemented yet"})
 
 
-def start_sync(account: dict, from_date: str = None, to_date: str = None, days: int = 30) -> dict:
+def start_sync(account: dict, from_date: str = None, to_date: str = None, days: int = 30,
+               export_format: str = None) -> dict:
     """Start fetching transactions for a FinTS account.
 
     Blocks until aqbanking-cli has connected to the bank and determined whether
     a TAN is required.  Returns either:
       {"status": "ok", ...}      — completed inline (no TAN needed)
       {"status": "pending", ...} — push sent; caller must POST /sync/{id}/confirm
+
+    export_format: "json" or "csv" — if set and bank completes without TAN, returns raw
+    transactions instead of forwarding to targets (same behaviour as the confirm endpoint).
     """
     account_id = account["id"]
     logger.info(f"Starting sync for account: {account_id}")
@@ -504,6 +510,8 @@ def start_sync(account: dict, from_date: str = None, to_date: str = None, days: 
             if result["status"] == "ok":
                 transactions = result["transactions"]
                 logger.info(f"Fetched {len(transactions)} transactions from {account_id} (no TAN)")
+                if export_format in ("json", "csv"):
+                    return {"status": "ok", "export_format": export_format, "transactions": transactions}
                 stats = _forward_to_targets(transactions, account)
                 _save_last_sync(account_id)
                 return {"status": "ok", **stats}
@@ -512,6 +520,8 @@ def start_sync(account: dict, from_date: str = None, to_date: str = None, days: 
         else:
             transactions = client.fetch_transactions()
             logger.info(f"Fetched {len(transactions)} transactions from {account_id}")
+            if export_format in ("json", "csv"):
+                return {"status": "ok", "export_format": export_format, "transactions": transactions}
             stats = _forward_to_targets(transactions, account)
             _save_last_sync(account_id)
             return {"status": "ok", **stats}
