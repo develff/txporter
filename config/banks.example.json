@@ -21,6 +21,16 @@
       "tan_mode": 6903
     },
     {
+      "id": "consorsbank",
+      "name": "Consorsbank",
+      "type": "fints",
+      "blz": "76030080",
+      "url": "https://brokerage-hbci.consorsbank.de/hbci",
+      "login": "YOUR_ACCOUNT_NUMBER_PLUS_ADVISOR_ID",
+      "hbci_version": 300,
+      "tan_mode": 6900
+    },
+    {
       "id": "paypal",
       "name": "PayPal",
       "type": "paypal",

@@ -50,10 +50,15 @@ def sync_one(account_id):
 
 @app.route("/sync/<account_id>/confirm", methods=["POST"])
 def confirm_one(account_id):
-    """Confirm TAN approval for a pending sync."""
+    """Confirm TAN approval for a pending sync.
+
+    Query param: ?dry_run=true — parse and return transactions as JSON without
+    forwarding to any target. Useful for inspecting raw CTX field data.
+    """
     if account_id not in _pending_syncs:
         return jsonify({"error": f"No pending sync for '{account_id}'"}), 404
-    return jsonify(complete_sync(account_id))
+    dry_run = request.args.get("dry_run", "").lower() == "true"
+    return jsonify(complete_sync(account_id, dry_run=dry_run))
 
 
 @app.route("/accounts", methods=["GET"])
@@ -269,6 +274,7 @@ def setup_submit_tan(setup_id):
         logger.error("TAN submission failed for %s: %s", setup_id, e)
         return jsonify({"error": str(e)}), 500
 
+    config["accounts"] = bank_setup.load_config()["accounts"]
     return jsonify(result)
 
 
@@ -290,6 +296,7 @@ def setup_confirm(setup_id):
         _pending_setups[setup_id] = session  # keep alive for /tan submission
         return jsonify(result), 202
 
+    config["accounts"] = bank_setup.load_config()["accounts"]
     return jsonify(result)
 
 
@@ -320,7 +327,7 @@ def start_sync(account: dict) -> dict:
         return {"status": "error", "message": str(e)}
 
 
-def complete_sync(account_id: str) -> dict:
+def complete_sync(account_id: str, dry_run: bool = False) -> dict:
     """Confirm TAN and complete the pending sync."""
     pending = _pending_syncs.pop(account_id)
     account = pending["account"]
@@ -330,6 +337,8 @@ def complete_sync(account_id: str) -> dict:
     try:
         transactions = client.complete_fetch(proc)
         logger.info(f"Fetched {len(transactions)} transactions from {account_id}")
+        if dry_run:
+            return {"status": "dry_run", "transactions": transactions}
         _forward_to_targets(transactions, account)
         return {"status": "ok", "transactions": len(transactions)}
     except Exception as e:
