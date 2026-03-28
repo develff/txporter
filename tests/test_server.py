@@ -55,10 +55,9 @@ class TestSyncConfirmDryRun:
         import src.server as server_mod
         mock_client = MagicMock()
         mock_client.complete_fetch.return_value = transactions
-        mock_proc = MagicMock()
         account = {"id": "consorsbank", "name": "consorsbank", "type": "fints", "aqbanking_id": 9}
         server_mod._pending_syncs["consorsbank"] = {
-            "proc": mock_proc, "client": mock_client, "account": account,
+            "client": mock_client, "account": account,
         }
 
     def test_dry_run_returns_transactions_as_json(self, sync_client):

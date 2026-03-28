@@ -488,14 +488,26 @@ def status():
 
 
 def start_sync(account: dict, from_date: str = None, to_date: str = None, days: int = 30) -> dict:
-    """Start fetching transactions; for FinTS returns pending (awaiting TAN confirmation)."""
+    """Start fetching transactions for a FinTS account.
+
+    Blocks until aqbanking-cli has connected to the bank and determined whether
+    a TAN is required.  Returns either:
+      {"status": "ok", ...}      — completed inline (no TAN needed)
+      {"status": "pending", ...} — push sent; caller must POST /sync/{id}/confirm
+    """
     account_id = account["id"]
     logger.info(f"Starting sync for account: {account_id}")
     try:
         client = AqBankingClient(account)
         if account.get("type") == "fints":
-            proc = client.start_fetch(from_date=from_date, to_date=to_date, days=days)
-            _pending_syncs[account_id] = {"proc": proc, "client": client, "account": account}
+            result = client.start_fetch(from_date=from_date, to_date=to_date, days=days)
+            if result["status"] == "ok":
+                transactions = result["transactions"]
+                logger.info(f"Fetched {len(transactions)} transactions from {account_id} (no TAN)")
+                stats = _forward_to_targets(transactions, account)
+                _save_last_sync(account_id)
+                return {"status": "ok", **stats}
+            _pending_syncs[account_id] = {"client": client, "account": account}
             return {"status": "pending", "message": f"Confirm in banking app, then POST /sync/{account_id}/confirm"}
         else:
             transactions = client.fetch_transactions()
@@ -513,10 +525,9 @@ def complete_sync(account_id: str, dry_run: bool = False, export_format: str = N
     pending = _pending_syncs.pop(account_id)
     account = pending["account"]
     client = pending["client"]
-    proc = pending["proc"]
     logger.info(f"Completing sync for account: {account_id}")
     try:
-        transactions = client.complete_fetch(proc)
+        transactions = client.complete_fetch()
         logger.info(f"Fetched {len(transactions)} transactions from {account_id}")
         if dry_run:
             return {"status": "dry_run", "transactions": transactions}
