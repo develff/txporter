@@ -19,6 +19,35 @@ _NOTES_FIELDS = [
 ]
 
 
+def _german_iban(account: dict) -> str | None:
+    """Derive the German IBAN from BLZ + Kontonummer if not already stored.
+
+    Works for all German bank accounts (DE IBANs).
+    Returns None if required fields are missing or account number is too long.
+    """
+    iban = (account.get("iban") or "").strip()
+    if iban:
+        return iban
+    blz = (account.get("blz") or account.get("bank_code_aq") or "").strip()
+    acct_nr = (account.get("account_number") or "").strip()
+    if not blz or not acct_nr or len(blz) != 8 or not blz.isdigit() or not acct_nr.isdigit():
+        return None
+    acct_nr = acct_nr.zfill(10)
+    if len(acct_nr) > 10:
+        return None
+    # Standard DE IBAN: move "DE00" to end, replace letters with digits (D=13, E=14)
+    numeric_str = blz + acct_nr + "1314" + "00"
+    check_digits = 98 - int(numeric_str) % 97
+    return f"DE{check_digits:02d}{blz}{acct_nr}"
+
+
+def _iso_date(date_str: str) -> str:
+    """Convert YYYYMMDD to YYYY-MM-DD; pass through any other format unchanged."""
+    if date_str and len(date_str) == 8 and date_str.isdigit():
+        return f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}"
+    return date_str
+
+
 def _build_description(tx: dict) -> str:
     text = tx.get("transaction_text", "")
     purpose = tx.get("purpose", "")
@@ -61,7 +90,7 @@ class FireflyClient:
 
         currency = transactions[0].get("currency_code", "EUR")
         account_name = account.get("name", "")
-        firefly_account_id = self._ensure_asset_account(account_name, currency)
+        firefly_account_id = self._ensure_asset_account(account_name, currency, account)
         start_date = self._dedup_start_date(transactions)
         existing_ids = self._fetch_existing_external_ids(firefly_account_id, start_date=start_date)
         logger.info(
@@ -85,11 +114,19 @@ class FireflyClient:
         logger.info("Import complete: %d found, %d imported, %d skipped", found, imported, skipped)
         return {"found": found, "imported": imported, "skipped": skipped}
 
-    def _ensure_asset_account(self, name: str, currency_code: str) -> str | None:
-        """Create the asset account in Firefly III if it does not exist yet.
+    def _ensure_asset_account(self, name: str, currency_code: str, account: dict) -> str | None:
+        """Find or create the matching asset account in Firefly III.
+
+        Matching priority (stable identifiers first, name last):
+          1. IBAN — if the txporter account has one
+          2. account_number — for depot/savings accounts without IBAN
+          3. name — fallback for legacy accounts
 
         Returns the Firefly III account ID, or None on failure.
         """
+        iban = _german_iban(account) or ""
+        account_number = (account.get("account_number") or "").strip()
+
         response = requests.get(
             f"{self.base_url}/api/v1/accounts",
             headers=self.headers,
@@ -97,12 +134,31 @@ class FireflyClient:
         )
         if response.ok:
             for a in response.json().get("data", []):
-                if a.get("attributes", {}).get("name") == name:
-                    logger.debug("Asset account already exists: %s", name)
+                attrs = a.get("attributes", {})
+                if iban and attrs.get("iban") == iban:
+                    logger.debug("Asset account matched by IBAN %s: %s", iban, name)
                     return a.get("id")
+                if account_number and attrs.get("account_number") == account_number:
+                    logger.debug("Asset account matched by account_number %s: %s", account_number, name)
+                    return a.get("id")
+                if attrs.get("name") == name:
+                    logger.debug("Asset account matched by name: %s", name)
+                    account_id = a.get("id")
+                    if iban and not attrs.get("iban"):
+                        self._backfill_iban(account_id, iban, account_number)
+                    return account_id
 
         logger.info("Creating asset account: %s", name)
-        payload = {"name": name, "type": "asset", "account_role": "defaultAsset", "currency_code": currency_code}
+        payload = {
+            "name": name,
+            "type": "asset",
+            "account_role": "defaultAsset",
+            "currency_code": currency_code,
+        }
+        if iban:
+            payload["iban"] = iban
+        if account_number:
+            payload["account_number"] = account_number
         resp = requests.post(
             f"{self.base_url}/api/v1/accounts",
             headers=self.headers,
@@ -114,6 +170,25 @@ class FireflyClient:
         else:
             logger.error("Failed to create asset account %s: %s", name, resp.text)
             return None
+
+    def _backfill_iban(self, account_id: str, iban: str, account_number: str) -> None:
+        """Write computed IBAN (and account_number) back to an existing Firefly account.
+
+        One-time enrichment: after this, future lookups match by IBAN, not name,
+        so renaming the account in txporter has no effect.
+        """
+        payload = {"iban": iban}
+        if account_number:
+            payload["account_number"] = account_number
+        resp = requests.put(
+            f"{self.base_url}/api/v1/accounts/{account_id}",
+            headers=self.headers,
+            json=payload,
+        )
+        if resp.ok:
+            logger.info("Backfilled IBAN %s on Firefly account %s", iban, account_id)
+        else:
+            logger.warning("Could not backfill IBAN on Firefly account %s: %s", account_id, resp.text)
 
     @staticmethod
     def _dedup_start_date(transactions: list, buffer_days: int = 7) -> str | None:
@@ -188,7 +263,7 @@ class FireflyClient:
 
         split = {
             "type": tx_type,
-            "date": tx.get("date", ""),
+            "date": _iso_date(tx.get("date", "")),
             "amount": amount,
             "currency_code": tx.get("currency_code", ""),
             "description": _build_description(tx),
@@ -207,7 +282,7 @@ class FireflyClient:
                 split["source_name"] = remote_name
 
         if tx.get("valuta_date"):
-            split["book_date"] = tx["valuta_date"]
+            split["book_date"] = _iso_date(tx["valuta_date"])
         if tx.get("end_to_end_reference"):
             split["sepa_ct_id"] = tx["end_to_end_reference"]
         if tx.get("primanota") and tx.get("primanota") != "0":

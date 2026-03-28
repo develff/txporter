@@ -2,7 +2,7 @@
 
 import pytest
 from unittest.mock import patch, MagicMock
-from src.firefly import FireflyClient, _build_description, _build_notes
+from src.firefly import FireflyClient, _build_description, _build_notes, _german_iban, _iso_date
 
 
 ACCOUNT = {"name": "DKB Girokonto"}
@@ -272,3 +272,70 @@ class TestDedupStartDate:
             client._fetch_existing_external_ids("42")
         call_params = mock_get.call_args.kwargs["params"]
         assert "start" not in call_params
+
+
+class TestIsoDate:
+    def test_converts_yyyymmdd_to_iso(self):
+        assert _iso_date("20250401") == "2025-04-01"
+
+    def test_passes_through_iso_format(self):
+        assert _iso_date("2025-04-01") == "2025-04-01"
+
+    def test_passes_through_empty_string(self):
+        assert _iso_date("") == ""
+
+    def test_passes_through_non_numeric(self):
+        assert _iso_date("2025-04-01T00:00:00+00:00") == "2025-04-01T00:00:00+00:00"
+
+
+class TestCreateTransactionDateFormat:
+    """date and book_date fields must be ISO YYYY-MM-DD for Firefly's date filter to work."""
+
+    def _post(self, tx):
+        client = FireflyClient(CONFIG)
+        mock_resp = MagicMock()
+        mock_resp.ok = True
+        mock_resp.status_code = 200
+        with patch("src.firefly.requests.post", return_value=mock_resp) as mock_post:
+            client._create_transaction(tx, ACCOUNT)
+        return mock_post.call_args.kwargs["json"]["transactions"][0]
+
+    def test_date_converted_to_iso(self):
+        split = self._post(make_tx(date="20250401"))
+        assert split["date"] == "2025-04-01"
+
+    def test_book_date_converted_to_iso(self):
+        split = self._post(make_tx(valuta_date="20250401"))
+        assert split["book_date"] == "2025-04-01"
+
+
+class TestGermanIban:
+    def test_computes_iban_from_blz_and_account_number(self):
+        # DKB BLZ 12030000, known account → verify formula produces valid DE IBAN
+        iban = _german_iban({"blz": "12030000", "account_number": "1234567890"})
+        assert iban is not None
+        assert iban.startswith("DE")
+        assert len(iban) == 22
+        # Verify check digits: re-running the formula on the result should give 1
+        digits = iban[4:] + "1314" + iban[2:4]
+        assert int(digits) % 97 == 1
+
+    def test_pads_short_account_number(self):
+        iban = _german_iban({"blz": "12030000", "account_number": "15788953"})
+        assert iban is not None
+        assert iban[4:12] == "12030000"
+        assert iban[12:] == "0015788953"
+
+    def test_prefers_stored_iban(self):
+        assert _german_iban({"iban": "DE89370400440532013000"}) == "DE89370400440532013000"
+
+    def test_returns_none_without_blz(self):
+        assert _german_iban({"account_number": "1234567890"}) is None
+
+    def test_returns_none_for_non_numeric_account(self):
+        assert _german_iban({"blz": "12030000", "account_number": "ABC123"}) is None
+
+    def test_uses_bank_code_aq_fallback(self):
+        iban = _german_iban({"bank_code_aq": "12030000", "account_number": "1234567890"})
+        assert iban is not None
+        assert iban.startswith("DE")
