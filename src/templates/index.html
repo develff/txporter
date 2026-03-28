@@ -307,6 +307,35 @@
     .card.disabled { opacity: .55; }
     .badge-disabled { background: #f1f5f9; color: #94a3b8; }
 
+    /* ── Toggle switch ── */
+    .toggle { display: inline-flex; align-items: center; cursor: pointer; }
+    .toggle input[type=checkbox] { display: none; }
+    .toggle-track {
+      width: 40px; height: 22px; border-radius: 11px;
+      background: var(--border); transition: background .2s; position: relative; flex-shrink: 0;
+    }
+    .toggle input:checked + .toggle-track { background: var(--primary); }
+    .toggle-track::after {
+      content: ''; position: absolute; top: 3px; left: 3px;
+      width: 16px; height: 16px; border-radius: 50%;
+      background: #fff; transition: left .2s;
+    }
+    .toggle input:checked + .toggle-track::after { left: 21px; }
+
+    /* ── Scheduler status bar (header) ── */
+    #scheduler-bar {
+      display: none;
+      align-items: center;
+      gap: 8px;
+      padding: 5px 12px;
+      background: #f0fdf4;
+      border: 1px solid #bbf7d0;
+      border-radius: var(--radius);
+      font-size: 12px;
+      color: #166534;
+    }
+    #scheduler-bar.show { display: flex; }
+
     /* ── TAN mode list ── */
     .tan-mode-list { list-style: none; display: flex; flex-direction: column; gap: 6px; }
     .tan-mode-item {
@@ -330,8 +359,15 @@
 
 <header>
   <h1>txporter</h1>
-  <div style="display:flex;gap:8px">
-    <button class="btn-secondary" id="btn-sync-all">Sync All</button>
+  <div style="display:flex;align-items:center;gap:8px">
+    <div id="scheduler-bar">
+      <span id="scheduler-bar-label"></span>
+      <button class="btn-secondary btn-sm" onclick="openSchedulerModal()" style="border-color:#bbf7d0;color:#166534">Configure</button>
+    </div>
+    <div style="display:flex;border:1px solid var(--border);border-radius:var(--radius);overflow:hidden">
+      <button class="btn-secondary" id="btn-sync-all" style="border:none;border-radius:0">Sync All</button>
+      <button class="btn-secondary" id="btn-scheduler" style="border:none;border-left:1px solid var(--border);border-radius:0;padding:7px 10px" title="Scheduler settings">▾</button>
+    </div>
     <button class="btn-primary" id="btn-add">+ Add Account</button>
   </div>
 </header>
@@ -356,6 +392,7 @@
 const state = {
   accounts: [],
   aqAccounts: [],
+  schedulerEnabled: false,
   setupId: null,
   setupAccountId: null,
   syncAccountId: null,
@@ -369,6 +406,18 @@ async function api(method, path, body) {
   const json = await r.json();
   if (!r.ok) throw new Error(json.error || `HTTP ${r.status}`);
   return json;
+}
+
+function updateSchedulerIndicator(enabled, time) {
+  const bar = document.getElementById("scheduler-bar");
+  const label = document.getElementById("scheduler-bar-label");
+  if (!bar) return;
+  if (enabled && time) {
+    label.textContent = `⏰ Auto sync enabled — daily at ${time}`;
+    bar.classList.add("show");
+  } else {
+    bar.classList.remove("show");
+  }
 }
 
 // ── Account list ───────────────────────────────────────────────────────────────
@@ -428,9 +477,14 @@ function renderAccounts() {
       ? `<div class="card-hint">Setup did not complete &mdash; delete and add again to retry.</div>`
       : "";
 
-    const lastSyncLine = a.last_sync_at
-      ? `<div class="card-hint">Last sync: ${formatDate(a.last_sync_at)}</div>`
-      : "";
+    let lastSyncLine = "";
+    if (a.last_sync_at) {
+      let statusIcon = "";
+      if (a.last_sync_status === "ok") statusIcon = `<span style="color:var(--success)">✓ ok</span> · `;
+      else if (a.last_sync_status === "error") statusIcon = `<span style="color:var(--danger)" title="${esc(a.last_sync_error || '')}">✗ error</span> · `;
+      else if (a.last_sync_status === "timeout") statusIcon = `<span style="color:var(--warning)">⏱ timeout</span> · `;
+      lastSyncLine = `<div class="card-hint">${statusIcon}Last sync: ${formatDate(a.last_sync_at)}</div>`;
+    }
 
     const toggleLabel = enabled ? "Disable" : "Enable";
 
@@ -960,6 +1014,103 @@ function triggerDownload(transactions, format, accountId) {
   a.download = `${accountId}_${new Date().toISOString().slice(0,10)}.${ext}`;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+// ── Scheduler settings ─────────────────────────────────────────────────────────
+
+function schedHourSelect(timeVal, disabled) {
+  const cur = timeVal ? parseInt(timeVal.split(":")[0]) : 20;
+  const opts = Array.from({length: 24}, (_, h) =>
+    `<option value="${h}" ${h === cur ? "selected" : ""}>${String(h).padStart(2,"0")}</option>`
+  ).join("");
+  return `<select id="sched-hour" ${disabled ? "disabled" : ""} style="width:72px">${opts}</select>`;
+}
+
+function schedMinuteSelect(timeVal, disabled) {
+  const cur = timeVal ? parseInt(timeVal.split(":")[1]) : 0;
+  const minutes = [0,5,10,15,20,25,30,35,40,45,50,55];
+  const nearest = minutes.reduce((a, b) => Math.abs(b - cur) < Math.abs(a - cur) ? b : a);
+  const opts = minutes.map(m =>
+    `<option value="${m}" ${m === nearest ? "selected" : ""}>${String(m).padStart(2,"0")}</option>`
+  ).join("");
+  return `<select id="sched-minute" ${disabled ? "disabled" : ""} style="width:72px">${opts}</select>`;
+}
+
+async function openSchedulerModal() {
+  let cfg = { enabled: false, time: "20:00", webhook_url: "", next_run: null };
+  try { cfg = await api("GET", "/scheduler"); } catch (_) {}
+  showModal(schedulerSettingsScreen(cfg));
+}
+
+function schedulerSettingsScreen(cfg) {
+  const enabled = cfg.enabled || false;
+  const timeVal = cfg.time || "20:00";
+  const webhookVal = cfg.webhook_url || "";
+  const nextRunHtml = cfg.next_run
+    ? `<div class="alert alert-info">Next scheduled run: ${formatDate(cfg.next_run)}</div>`
+    : "";
+  const tzLine = cfg.user_time_now
+    ? `<div style="font-size:12px;color:var(--text-muted);margin-bottom:12px">Server sees your current time as <strong>${esc(cfg.user_time_now)}</strong> (${esc(cfg.timezone || "UTC")})</div>`
+    : "";
+  return `
+  <div class="modal-header">
+    <div><div class="modal-title">Scheduled Sync</div>
+      <div class="modal-subtitle">Automatically sync all accounts daily</div></div>
+    <button class="modal-close" onclick="closeModal()">×</button>
+  </div>
+  <div class="modal-body">
+    ${nextRunHtml}
+    ${tzLine}
+    <div class="form-group" style="display:flex;align-items:center;justify-content:space-between">
+      <span style="font-size:14px;font-weight:600">Enable daily sync</span>
+      <label class="toggle">
+        <input type="checkbox" id="sched-enabled" ${enabled ? "checked" : ""} onchange="onSchedEnabledChange()">
+        <span class="toggle-track"></span>
+      </label>
+    </div>
+    <div class="form-group" id="sched-time-group" ${!enabled ? 'style="opacity:.5"' : ""}>
+      <label>Time (daily) <span style="font-weight:400;text-transform:none">${esc(cfg.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone)}</span></label>
+      <div style="display:flex;align-items:center;gap:6px">
+        ${schedHourSelect(timeVal, !enabled)}
+        <span style="font-size:16px;color:var(--text-muted);font-weight:500">:</span>
+        ${schedMinuteSelect(timeVal, !enabled)}
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Webhook URL <span style="font-weight:400;text-transform:none">(optional — called on failure)</span></label>
+      <input type="text" id="sched-webhook" placeholder="http://homeassistant.local:8123/api/webhook/..." value="${esc(webhookVal)}">
+    </div>
+  </div>
+  <div class="modal-footer">
+    <button class="btn-secondary" onclick="closeModal()">Cancel</button>
+    <button class="btn-primary" onclick="saveScheduler()">Save</button>
+  </div>`;
+}
+
+function onSchedEnabledChange() {
+  const enabled = document.getElementById("sched-enabled").checked;
+  const group = document.getElementById("sched-time-group");
+  group.style.opacity = enabled ? "" : ".5";
+  document.getElementById("sched-hour").disabled = !enabled;
+  document.getElementById("sched-minute").disabled = !enabled;
+}
+
+async function saveScheduler() {
+  const enabled = document.getElementById("sched-enabled").checked;
+  const h = String(document.getElementById("sched-hour").value).padStart(2, "0");
+  const m = String(document.getElementById("sched-minute").value).padStart(2, "0");
+  const time = `${h}:${m}`;
+  const webhookUrl = document.getElementById("sched-webhook").value.trim();
+  if (enabled && !time) { prependAlert("alert-warn", "Time is required when scheduler is enabled."); return; }
+  const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  try {
+    const r = await api("POST", "/scheduler", { enabled, time, webhook_url: webhookUrl, timezone });
+    state.schedulerEnabled = r.enabled;
+    updateSchedulerIndicator(r.enabled, r.time);
+    closeModal();
+  } catch (e) {
+    prependAlert("alert-error", "Could not save: " + e.message);
+  }
 }
 
 // ── Setup wizard ───────────────────────────────────────────────────────────────
@@ -1494,9 +1645,19 @@ document.getElementById("modal").addEventListener("click", function(e) {
 
 document.getElementById("btn-add").addEventListener("click", openSetupWizard);
 document.getElementById("btn-sync-all").addEventListener("click", openSyncAllModal);
+document.getElementById("btn-scheduler").addEventListener("click", openSchedulerModal);
 
 // ── Init ───────────────────────────────────────────────────────────────────────
-loadAccounts();
+async function init() {
+  await loadAccounts();
+  try {
+    const sched = await api("GET", "/scheduler");
+    state.schedulerEnabled = sched.enabled;
+    updateSchedulerIndicator(sched.enabled, sched.time);
+  } catch (_) {}
+}
+
+init();
 </script>
 </body>
 </html>
