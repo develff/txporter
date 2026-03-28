@@ -150,3 +150,94 @@ class TestWebUI:
         assert resp.status_code == 200
         assert b"txporter" in resp.data
         assert b"text/html" in resp.content_type.encode()
+
+
+class TestScheduler:
+    def test_get_scheduler_defaults(self, sync_client):
+        resp = sync_client.get("/scheduler")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["enabled"] is False
+        assert data["next_run"] is None
+
+    def test_post_scheduler_saves_and_returns_config(self, sync_client, tmp_path):
+        resp = sync_client.post(
+            "/scheduler",
+            data=json.dumps({"enabled": True, "time": "20:00", "webhook_url": ""}),
+            content_type="application/json",
+        )
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["enabled"] is True
+        assert data["time"] == "20:00"
+        assert data["next_run"] is not None
+
+    def test_post_scheduler_persists_to_config(self, sync_client, tmp_path):
+        sync_client.post(
+            "/scheduler",
+            data=json.dumps({"enabled": True, "time": "08:00", "webhook_url": "http://example.com/hook"}),
+            content_type="application/json",
+        )
+        import src.setup as setup_mod
+        saved = json.loads(open(setup_mod.CONFIG_PATH).read())
+        assert saved["scheduler"]["enabled"] is True
+        assert saved["scheduler"]["time"] == "08:00"
+        assert saved["scheduler"]["webhook_url"] == "http://example.com/hook"
+
+    def test_post_scheduler_invalid_time_format(self, sync_client):
+        resp = sync_client.post(
+            "/scheduler",
+            data=json.dumps({"enabled": True, "time": "8pm"}),
+            content_type="application/json",
+        )
+        assert resp.status_code == 400
+
+    def test_post_scheduler_time_out_of_range(self, sync_client):
+        resp = sync_client.post(
+            "/scheduler",
+            data=json.dumps({"enabled": True, "time": "25:00"}),
+            content_type="application/json",
+        )
+        assert resp.status_code == 400
+
+    def test_post_scheduler_disabled_skips_time_validation(self, sync_client):
+        resp = sync_client.post(
+            "/scheduler",
+            data=json.dumps({"enabled": False, "time": ""}),
+            content_type="application/json",
+        )
+        assert resp.status_code == 200
+        assert resp.get_json()["enabled"] is False
+
+    def test_get_scheduler_returns_next_run_when_enabled(self, sync_client):
+        sync_client.post(
+            "/scheduler",
+            data=json.dumps({"enabled": True, "time": "20:00", "webhook_url": ""}),
+            content_type="application/json",
+        )
+        resp = sync_client.get("/scheduler")
+        assert resp.status_code == 200
+        assert resp.get_json()["next_run"] is not None
+
+
+class TestLastSyncStatus:
+    def test_last_sync_status_ok_in_accounts(self, sync_client, tmp_path):
+        """After a successful sync, last_sync_status=ok is returned by /accounts."""
+        import src.server as server_mod
+        import src.setup as setup_mod
+
+        mock_client = MagicMock()
+        mock_client.start_fetch.return_value = {"status": "ok", "transactions": []}
+
+        with patch("src.server.AqBankingClient", return_value=mock_client), \
+             patch("src.server._forward_to_targets", return_value={}):
+            sync_client.post(
+                "/sync/consorsbank",
+                data=json.dumps({}),
+                content_type="application/json",
+            )
+
+        resp = sync_client.get("/accounts")
+        assert resp.status_code == 200
+        acc = next(a for a in resp.get_json() if a["id"] == "consorsbank")
+        assert acc.get("last_sync_status") == "ok"

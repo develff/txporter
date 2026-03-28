@@ -3,9 +3,14 @@ txporter - REST API server
 Exposes endpoints to trigger transaction sync from financial accounts.
 """
 
+import re
+import threading
+import time as _time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+import requests as _requests
 from flask import Flask, jsonify, render_template, request
 from aqbanking import AqBankingClient
 from config import load_config
@@ -25,6 +30,123 @@ _pending_syncs = {}
 # Stores in-progress bank setup sessions { setup_id: SetupSession }
 _pending_setups = {}
 
+# ── Scheduler ─────────────────────────────────────────────────────────────────
+_scheduler_last_run = None  # (date, configured_time) of last scheduled run
+
+
+def get_scheduler_config() -> dict:
+    """Read scheduler section from banks.json."""
+    try:
+        return bank_setup.load_config().get("scheduler", {})
+    except Exception as e:
+        logger.warning(f"Could not read scheduler config: {e}")
+        return {}
+
+
+def _user_tz(sched_cfg: dict) -> ZoneInfo:
+    """Return a ZoneInfo for the stored timezone, defaulting to UTC."""
+    tz_name = sched_cfg.get("timezone") or "UTC"
+    try:
+        return ZoneInfo(tz_name)
+    except (ZoneInfoNotFoundError, KeyError):
+        logger.warning(f"Timezone '{tz_name}' not found (tzdata missing?), falling back to UTC")
+        return ZoneInfo("UTC")
+
+
+def _compute_next_run(sched_cfg: dict):
+    """Return ISO timestamp of next scheduled run in the user's timezone, or None."""
+    if not sched_cfg.get("enabled") or not sched_cfg.get("time"):
+        return None
+    try:
+        h, m = map(int, sched_cfg["time"].split(":"))
+        now = datetime.now(_user_tz(sched_cfg))
+        next_run = now.replace(hour=h, minute=m, second=0, microsecond=0)
+        if next_run <= now:
+            next_run += timedelta(days=1)
+        return next_run.strftime("%Y-%m-%dT%H:%M:%S")
+    except Exception:
+        return None
+
+
+def _fire_webhook(webhook_url: str, account_id: str, error: str) -> None:
+    """POST failure notification to the configured webhook URL."""
+    if not webhook_url:
+        return
+    try:
+        _requests.post(webhook_url, json={
+            "account": account_id,
+            "error": error,
+            "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }, timeout=10)
+        logger.info(f"Webhook fired for {account_id}: {error}")
+    except Exception as e:
+        logger.error(f"Webhook POST failed for {account_id}: {e}")
+
+
+def _start_pending_timeout(account_id: str, webhook_url: str) -> None:
+    """Start a 5-minute timeout watcher for a pending re-auth sync."""
+    def watcher():
+        _time.sleep(300)
+        if account_id in _pending_syncs:
+            _pending_syncs.pop(account_id, None)
+            msg = "Re-auth timeout after 5 min"
+            logger.error(f"Scheduled sync timeout for {account_id}: {msg}")
+            _save_last_sync_error(account_id, "timeout", msg)
+            _fire_webhook(webhook_url, account_id, msg)
+    threading.Thread(target=watcher, daemon=True).start()
+
+
+def _run_scheduled_sync() -> None:
+    """Run sync for all enabled, connected accounts (called by scheduler thread)."""
+    logger.info("Running scheduled sync")
+    sched_cfg = get_scheduler_config()
+    webhook_url = sched_cfg.get("webhook_url", "")
+    for account in list(config["accounts"]):
+        if not account.get("aqbanking_id"):
+            continue
+        if account.get("enabled") is False:
+            continue
+        account_id = account["id"]
+        result = start_sync(account)
+        if result["status"] == "pending":
+            _start_pending_timeout(account_id, webhook_url)
+        elif result["status"] == "error":
+            _save_last_sync_error(account_id, "error", result.get("message", "sync error"))
+            _fire_webhook(webhook_url, account_id, result.get("message", "sync error"))
+
+
+def _scheduler_loop() -> None:
+    """Background thread: fires scheduled sync at the configured daily time."""
+    global _scheduler_last_run
+    logger.info("Scheduler thread started")
+    _last_alive_log_hour = -1
+    while True:
+        try:
+            sched_cfg = get_scheduler_config()
+            if sched_cfg.get("enabled") and sched_cfg.get("time"):
+                tz = _user_tz(sched_cfg)
+                now = datetime.now(tz)
+                h, m = map(int, sched_cfg["time"].split(":"))
+                if now.hour != _last_alive_log_hour:
+                    _last_alive_log_hour = now.hour
+                    logger.info(
+                        f"Scheduler active — daily at {sched_cfg['time']} "
+                        f"({sched_cfg.get('timezone', 'UTC')}), "
+                        f"user time {now.strftime('%H:%M')} "
+                        f"(last run: {_scheduler_last_run or 'never'})"
+                    )
+                run_key = (now.date(), sched_cfg["time"])
+                if now.hour == h and now.minute == m and _scheduler_last_run != run_key:
+                    _scheduler_last_run = run_key
+                    logger.info(f"Scheduler triggering sync at {now.strftime('%H:%M:%S')}")
+                    threading.Thread(target=_run_scheduled_sync, daemon=True).start()
+        except Exception as e:
+            logger.error(f"Scheduler check error: {e}")
+        _time.sleep(30)
+
+
+threading.Thread(target=_scheduler_loop, daemon=True, name="txporter-scheduler").start()
+
 
 @app.route("/", methods=["GET"])
 def index():
@@ -35,6 +157,57 @@ def index():
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok"})
+
+
+@app.route("/scheduler", methods=["GET"])
+def scheduler_get():
+    """Return current scheduler config and next scheduled run time."""
+    sched_cfg = get_scheduler_config()
+    tz = _user_tz(sched_cfg)
+    return jsonify({
+        "enabled": sched_cfg.get("enabled", False),
+        "time": sched_cfg.get("time", ""),
+        "webhook_url": sched_cfg.get("webhook_url", ""),
+        "timezone": sched_cfg.get("timezone", "UTC"),
+        "next_run": _compute_next_run(sched_cfg),
+        "user_time_now": datetime.now(tz).strftime("%H:%M"),
+    })
+
+
+@app.route("/scheduler", methods=["POST"])
+def scheduler_post():
+    """Update scheduler config (enabled, time, webhook_url)."""
+    body = request.get_json(force=True, silent=True) or {}
+    enabled = bool(body.get("enabled", False))
+    time_str = (body.get("time") or "").strip()
+    webhook_url = (body.get("webhook_url") or "").strip()
+    timezone_name = (body.get("timezone") or "UTC").strip()
+
+    if enabled and time_str:
+        if not re.match(r"^\d{2}:\d{2}$", time_str):
+            return jsonify({"error": "time must be in HH:MM format"}), 400
+        h, m = map(int, time_str.split(":"))
+        if not (0 <= h <= 23 and 0 <= m <= 59):
+            return jsonify({"error": "time out of range"}), 400
+    try:
+        ZoneInfo(timezone_name)
+    except (ZoneInfoNotFoundError, KeyError):
+        return jsonify({"error": f"Unknown timezone '{timezone_name}'"}), 400
+
+    cfg = bank_setup.load_config()
+    cfg["scheduler"] = {
+        "enabled": enabled, "time": time_str,
+        "webhook_url": webhook_url, "timezone": timezone_name,
+    }
+    bank_setup.save_config(cfg)
+    sched_cfg = cfg["scheduler"]
+    return jsonify({
+        "enabled": sched_cfg["enabled"],
+        "time": sched_cfg["time"],
+        "webhook_url": sched_cfg["webhook_url"],
+        "timezone": sched_cfg["timezone"],
+        "next_run": _compute_next_run(sched_cfg),
+    })
 
 
 @app.route("/sync", methods=["POST"])
@@ -110,6 +283,8 @@ def list_accounts():
                 a["account_type_label"].lower(), a["account_type_label"]
             )} if "account_type_label" in a else {}),
             **({"last_sync_at": a["last_sync_at"]} if "last_sync_at" in a else {}),
+            **({"last_sync_status": a["last_sync_status"]} if "last_sync_status" in a else {}),
+            **({"last_sync_error": a["last_sync_error"]} if "last_sync_error" in a else {}),
         }
         for a in cfg["accounts"]
     ])
@@ -552,16 +727,33 @@ def complete_sync(account_id: str, dry_run: bool = False, export_format: str = N
 
 
 def _save_last_sync(account_id: str) -> None:
-    """Persist last_sync_at timestamp for an account in banks.json."""
+    """Persist last_sync_at and ok status for an account in banks.json."""
     try:
         cfg = bank_setup.load_config()
         account = next((a for a in cfg["accounts"] if a["id"] == account_id), None)
         if account:
             account["last_sync_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            account["last_sync_status"] = "ok"
+            account.pop("last_sync_error", None)
             bank_setup.save_config(cfg)
             config["accounts"] = cfg["accounts"]
     except Exception as e:
         logger.warning(f"Could not save last_sync_at for {account_id}: {e}")
+
+
+def _save_last_sync_error(account_id: str, status: str, error: str) -> None:
+    """Persist error/timeout sync status for an account in banks.json."""
+    try:
+        cfg = bank_setup.load_config()
+        account = next((a for a in cfg["accounts"] if a["id"] == account_id), None)
+        if account:
+            account["last_sync_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            account["last_sync_status"] = status
+            account["last_sync_error"] = error
+            bank_setup.save_config(cfg)
+            config["accounts"] = cfg["accounts"]
+    except Exception as e:
+        logger.warning(f"Could not save last_sync_error for {account_id}: {e}")
 
 
 def _forward_to_targets(transactions: list, account: dict) -> dict:
