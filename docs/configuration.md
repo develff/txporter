@@ -10,9 +10,10 @@ Location: `config/banks.json` (gitignored — never commit this file)
 
 ```json
 {
-  "id": "unique-id",
-  "name": "Display name",
+  "id": "dkb",
+  "name": "DKB",
   "type": "fints",
+  "aqbanking_id": 4,
   "blz": "12030000",
   "url": "https://fints.dkb.de/fints",
   "login": "your-login",
@@ -23,11 +24,12 @@ Location: `config/banks.json` (gitignored — never commit this file)
 
 | Field | Description |
 |-------|-------------|
-| `id` | Unique identifier, used in API calls |
+| `id` | Unique identifier, used in API calls (e.g. `/sync/dkb`) |
+| `aqbanking_id` | AqBanking UniqueId from `aqhbci-tool4 listaccounts -v` |
 | `blz` | German bank code (Bankleitzahl) |
 | `url` | FinTS server URL |
 | `login` | Your online banking login |
-| `tan_mode` | TAN method ID (see bank documentation) |
+| `tan_mode` | TAN method ID (see `aqhbci-tool4 listitanmodes`) |
 
 #### PayPal
 
@@ -42,11 +44,11 @@ Location: `config/banks.json` (gitignored — never commit this file)
 
 ### Known FinTS URLs
 
-| Bank | BLZ | URL |
-|------|-----|-----|
-| DKB | 12030000 | `https://fints.dkb.de/fints` |
-| 1822direkt | 50050201 | `https://banking.1822direkt.com/banking/FinTS` |
-| Consorsbank | 76030080 | `https://fin.consorsbank.de/auth` |
+| Bank | BLZ | URL | TAN mode |
+|------|-----|-----|----------|
+| DKB | 12030000 | `https://fints.dkb.de/fints` | 7940 (DKB App) |
+| 1822direkt | 50050222 | `https://fints.1822direkt.com/fints/hbci` | 6903 (1822TAN+) |
+| Consorsbank | 76030080 | `https://fin.consorsbank.de/auth` | pushTAN (unverified) |
 
 ### Targets
 
@@ -69,11 +71,32 @@ Location: `config/banks.json` (gitignored — never commit this file)
 }
 ```
 
+## PIN file
+
+Location: `config/pinfile` (gitignored — never commit this file)
+
+AqBanking reads PINs non-interactively from a PIN file. Generate it with:
+
+```bash
+docker compose run --rm txporter aqhbci-tool4 mkpinlist -o /home/txporter/config/pinfile
+```
+
+Then edit `config/pinfile` and add your PIN for each bank account in the format:
+
+```
+PIN_BLZ_LOGIN = "yourpin"
+```
+
+Protect the file: `chmod 600 config/pinfile`
+
+The PIN file path can be overridden with the `TXPORTER_PINFILE` environment variable.
+
 ## Environment variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `TXPORTER_CONFIG` | `/home/txporter/config/banks.json` | Path to config file |
+| `TXPORTER_PINFILE` | `/home/txporter/config/pinfile` | Path to AqBanking PIN file |
 
 ## REST API
 
@@ -82,5 +105,6 @@ Location: `config/banks.json` (gitignored — never commit this file)
 | `/health` | GET | Health check |
 | `/accounts` | GET | List configured accounts |
 | `/sync` | POST | Sync all accounts |
-| `/sync/{id}` | POST | Sync single account |
+| `/sync/{id}` | POST | Start sync for one account (FinTS: returns `pending`, confirm in app) |
+| `/sync/{id}/confirm` | POST | Complete a pending FinTS sync after TAN confirmation |
 | `/status` | GET | Last sync status |

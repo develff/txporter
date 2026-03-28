@@ -7,9 +7,13 @@ services:
       - "8090:8090"
     volumes:
       - txporter_data:/home/txporter/.aqbanking
-      - ./config:/home/txporter/config:ro
+      - ./config:/home/txporter/config
       - ./output:/home/txporter/output
     env_file: .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
 volumes:
   txporter_data:
+    external: true
+    name: txporter_aqbanking

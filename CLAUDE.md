@@ -45,32 +45,30 @@ PayPal          ────► │                ──► CSV File
 - [x] src/firefly.py — Firefly III API client skeleton
 - [x] config/banks.example.json — example configuration
 - [x] docs/setup.md, docs/configuration.md
-- [ ] Dockerfile: choose base image (Arch vs openSUSE Tumbleweed vs Ubuntu)
-- [ ] scripts/setup.sh: interactive AqBanking bank setup script
-- [ ] src/aqbanking.py: implement actual CLI output parsing
-- [ ] src/firefly.py: implement proper transaction mapping to Firefly III API
-- [ ] First working Docker build
-- [ ] First real DKB sync test
+- [x] Dockerfile: openSUSE Tumbleweed (AqBanking 6.9.1, 148 MB base, rolling, glibc)
+- [x] scripts/setup.sh: interactive AqBanking bank setup script
+- [x] src/aqbanking.py: implement CTX output parsing (all fields, external_id, tests)
+- [x] src/firefly.py: implement proper transaction mapping to Firefly III API (storeTransaction)
+- [x] First working Docker build
+- [x] First real DKB sync test (used to gather sample data for field mapping)
 
 ## Known FinTS details
 
 | Bank | BLZ | URL | TAN mode |
 |------|-----|-----|----------|
 | DKB | 12030000 | https://fints.dkb.de/fints | 7940 (DKB App) |
-| 1822direkt | 50050201 | https://banking.1822direkt.com/banking/FinTS | pushTAN |
-| Consorsbank | 76030080 | https://fin.consorsbank.de/auth | pushTAN (URL unverified) |
+| 1822direkt | 50050222 | https://fints.1822direkt.com/fints/hbci | 6903 (1822TAN+, HKTAN V6/PSD2, read-only since 2025-09-16) |
+| Consorsbank | 76030080 | https://brokerage-hbci.consorsbank.de/hbci | pushTAN. Login = Kontonummer + 3-stellige Ber.-Nr., z.B. 900123456001 |
 
-## AqBanking setup flow (per bank, one-time interactive)
+## AqBanking setup flow (automated via REST API)
 
-```bash
-aqhbci-tool4 adduser -t pintan --context=1 -b BLZ -u LOGIN -s URL -N "Name" --hbciversion=300
-aqhbci-tool4 getsysid -u 1        # triggers TAN in app
-aqhbci-tool4 listitanmodes -u 1
-aqhbci-tool4 setitanmode -u 1 -m TAN_MODE
-aqhbci-tool4 getaccounts -u 1     # triggers TAN in app
-aqhbci-tool4 listaccounts -v
-aqhbci-tool4 getaccsepa -a ACCOUNT_ID
-```
+Bank registration is now driven by the REST API (`POST /setup`, `POST /setup/{id}/tanmode`,
+`POST /setup/{id}/confirm`). See `docs/setup.md` for the full flow.
+
+The underlying `aqhbci-tool4` commands executed per step:
+1. `adduser` → `getsysid` → `listitanmodes` (→ `setitanmode` + start `getaccounts` if TAN mode known)
+2. `setitanmode` + start `getaccounts` (triggers TAN in app)
+3. wait for `getaccounts` → `getaccsepa` → `listaccounts` → write `aqbanking_id` to banks.json
 
 ## Firefly III integration
 
@@ -80,12 +78,14 @@ aqhbci-tool4 getaccsepa -a ACCOUNT_ID
 
 ## Next steps (priority order)
 
-1. Choose and test Docker base image — check AqBanking version availability
-2. Get Docker build working
-3. Implement scripts/setup.sh for interactive bank registration
-4. Implement aqbanking.py output parsing (test with real DKB account)
-5. Implement firefly.py transaction mapping
-6. End-to-end test: DKB → txporter → Firefly III
+1. ~~Choose and test Docker base image~~ — done (openSUSE Tumbleweed)
+2. ~~Get Docker build working~~ — Dockerfile in place
+3. ~~Implement scripts/setup.sh for interactive bank registration~~ — done (replaced by REST API, issue #13)
+4. ~~Implement aqbanking.py CTX output parsing~~ — done (issue #5)
+5. ~~Implement firefly.py transaction mapping to Firefly III storeTransaction API~~ — done (issue #7)
+6. ~~End-to-end test: DKB → txporter → Firefly III~~ — done, amounts and deposit/withdrawal mapping correct
+7. ~~Skip zero-amount (pending/reserved) transactions~~ — done (issue #11)
+8. ~~REST API for interactive bank setup (replaces setup.sh)~~ — done (issue #13)
 
 ## Development Guidelines
 

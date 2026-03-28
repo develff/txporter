@@ -1,5 +1,25 @@
 # Setup Guide
 
+## Docker base image
+
+txporter uses **openSUSE Tumbleweed** (`opensuse/tumbleweed`) as its base image.
+
+Rationale (evaluated 2026-03-26):
+
+| Image | AqBanking | Base size | Rolling | glibc |
+|-------|-----------|-----------|---------|-------|
+| openSUSE Tumbleweed | 6.9.1 | 148 MB | yes | yes |
+| Arch Linux | 6.9.1 | 558 MB | yes | yes |
+| Ubuntu 25.10 | 6.6.0 | 135 MB | no | yes |
+
+openSUSE Tumbleweed ships the same AqBanking version as Arch Linux (6.9.1) but
+with a significantly smaller base image. Ubuntu 25.10 is three minor versions
+behind and is not a rolling release. Alpine Linux was ruled out due to musl libc
+compatibility risks with AqBanking's FinTS/TLS stack.
+
+Both `aqbanking-cli` and `aqhbci-tool4` are present and functional in the built
+image.
+
 ## Prerequisites
 
 - Docker and Docker Compose installed
@@ -14,61 +34,170 @@
 git clone https://github.com/develff/txporter.git
 cd txporter
 cp config/banks.example.json config/banks.json
-```
-
-Edit `config/banks.json` with your bank credentials.
-**Keep this file secure — it contains sensitive data.**
-
-```bash
 chmod 600 config/banks.json
 ```
 
-### 2. Initial bank registration (one-time, interactive)
+Edit `config/banks.json` to add your Firefly III target config.
+Bank accounts are registered via the REST API (see below) — no manual editing needed.
 
-This step registers your bank accounts with AqBanking.
-You will need to confirm a TAN in your banking app.
-
-```bash
-docker compose run --rm txporter bash
-```
-
-Inside the container, for each bank:
-
-```bash
-# DKB example
-aqhbci-tool4 adduser -t pintan --context=1 \
-  -b 12030000 \
-  -u YOUR_LOGIN \
-  -s https://fints.dkb.de/fints \
-  -N "Vorname Nachname" \
-  --hbciversion=300
-
-aqhbci-tool4 getsysid -u 1        # triggers TAN in app
-aqhbci-tool4 listitanmodes -u 1
-aqhbci-tool4 setitanmode -u 1 -m 7940  # DKB App TAN mode
-aqhbci-tool4 getaccounts -u 1     # triggers TAN in app
-aqhbci-tool4 listaccounts -v
-```
-
-Exit the container — AqBanking config is persisted in the Docker volume.
-
-### 3. Start the service
+### 2. Start the service
 
 ```bash
 docker compose up -d
 ```
 
-### 4. Test
+### 3. Register a bank account (REST API)
+
+Bank registration is done via the txporter REST API. No manual file editing or
+shell access is required.
+
+#### List available predefined profiles
 
 ```bash
-# Health check
-curl http://localhost:8090/health
-
-# List configured accounts
-curl http://localhost:8090/accounts
-
-# Trigger sync for DKB
-curl -X POST http://localhost:8090/sync/dkb
+curl http://localhost:8090/setup/profiles
 ```
 
-When syncing, confirm the push notification in your banking app.
+Currently defined profiles: **dkb**, **1822direkt**, **consorsbank**.
+Unknown banks can be registered manually by supplying all fields (see below).
+
+#### Step 1 — Register bank
+
+```bash
+# Profile-based (recommended):
+curl -X POST http://localhost:8090/setup \
+  -H "Content-Type: application/json" \
+  -d '{"bank": "dkb", "login": "YOUR_LOGIN", "pin": "YOUR_PIN"}'
+```
+
+```bash
+# Manual (no predefined profile):
+curl -X POST http://localhost:8090/setup \
+  -H "Content-Type: application/json" \
+  -d '{
+    "blz": "12030000",
+    "url": "https://fints.dkb.de/fints",
+    "login": "YOUR_LOGIN",
+    "pin": "YOUR_PIN",
+    "name": "DKB Girokonto",
+    "hbci_version": 300,
+    "tan_mode": 7940
+  }'
+```
+
+Profile fields (`blz`, `url`, `hbci_version`, `tan_mode`) can be overridden per-request.
+
+**Response (profile with known TAN mode — TAN mode auto-selected):**
+```json
+{
+  "setup_id": "uuid-...",
+  "status": "pending_confirm",
+  "message": "Confirm TAN in banking app, then POST /setup/{id}/confirm",
+  "tan_modes": [...],
+  "auto_selected_tan_mode": 7940
+}
+```
+
+For **pushTAN banks** (e.g. DKB): confirm the TAN in your banking app, then proceed to Step 3.
+For **photoTAN/chipTAN banks** (e.g. Consorsbank): a TAN challenge will be presented in Step 3 — proceed there first.
+
+**Response (no TAN mode known — manual selection required):**
+```json
+{
+  "setup_id": "uuid-...",
+  "status": "pending_tan_mode",
+  "message": "Select TAN mode, then POST /setup/{id}/tanmode",
+  "tan_modes": [{"id": 7940, "description": "DKB App (pushTAN)"}, ...]
+}
+```
+
+Proceed to Step 2.
+
+#### Step 2 — Set TAN mode (only needed if not auto-selected)
+
+```bash
+curl -X POST http://localhost:8090/setup/{setup_id}/tanmode \
+  -H "Content-Type: application/json" \
+  -d '{"tan_mode": 7940}'
+```
+
+This triggers a TAN request in your banking app.
+Confirm it, then proceed to Step 3.
+
+#### Step 3 — Confirm
+
+```bash
+curl -X POST http://localhost:8090/setup/{setup_id}/confirm
+```
+
+**Response (pushTAN — e.g. DKB, 1822direkt):**
+```json
+{
+  "status": "ok",
+  "account_id": "dkb",
+  "aqbanking_id": 1,
+  "iban": "DE12300120001234567890",
+  "accounts": [...]
+}
+```
+
+**Response (photoTAN/chipTAN — e.g. Consorsbank):**
+```json
+{
+  "status": "pending_tan",
+  "setup_id": "uuid-...",
+  "challenge": "Bitte TAN eingeben.",
+  "message": "Enter TAN from your banking app, then POST /setup/{id}/tan"
+}
+```
+
+For `pending_tan`: open your banking app, scan the QR code / generate a TAN from the
+challenge, then proceed to Step 3b.
+
+#### Step 3b — Submit TAN (only for photoTAN/chipTAN banks)
+
+```bash
+curl -X POST http://localhost:8090/setup/{setup_id}/tan \
+  -H "Content-Type: application/json" \
+  -d '{"tan": "123456"}'
+```
+
+**Response:**
+```json
+{
+  "status": "ok",
+  "account_id": "consorsbank",
+  "aqbanking_id": 10,
+  "iban": null,
+  "accounts": [...]
+}
+```
+
+The account is now fully registered. `aqbanking_id` (and `iban` if available) are written
+back to `config/banks.json` automatically.
+
+### 4. Verify
+
+```bash
+# List all registered accounts
+curl http://localhost:8090/accounts
+
+# Trigger a sync
+curl -X POST http://localhost:8090/sync/dkb
+# → {"status":"pending","message":"Confirm in banking app, then POST /sync/dkb/confirm"}
+
+curl -X POST http://localhost:8090/sync/dkb/confirm
+# → {"status":"ok","transactions":N}
+```
+
+Banks with read-only access (e.g. 1822direkt since 2025-09-16) do not require TAN
+confirmation — `/sync/{id}` returns `{"status":"ok"}` directly.
+
+### Account management
+
+```bash
+# List all accounts (with aqbanking_id and IBAN after setup)
+curl http://localhost:8090/accounts
+
+# Remove an account registration
+curl -X DELETE http://localhost:8090/accounts/{aqbanking_id}
+```
