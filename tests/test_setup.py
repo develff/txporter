@@ -130,6 +130,21 @@ class TestParseListaccounts:
     def test_empty_output(self):
         assert _parse_listaccounts("") == []
 
+    def test_account_type_parsed(self):
+        accounts = _parse_listaccounts(self.SAMPLE)
+        assert accounts[0]["account_type"] == "bank"
+        assert accounts[0]["account_type_label"] == "Girokonto"
+
+    def test_account_type_investment(self):
+        line = "Account 0: Bank: 12030000 Account Number: 123  Account Type: investment LocalUniqueId: 1\n"
+        accounts = _parse_listaccounts(line)
+        assert accounts[0]["account_type_label"] == "Depot"
+
+    def test_account_type_none_when_absent(self):
+        accounts = _parse_listaccounts(self.SAMPLE_WITH_IBAN)
+        assert accounts[0]["account_type"] is None
+        assert accounts[0]["account_type_label"] is None
+
 
 # ── SetupSession._find_aqbanking_id / _find_iban ───────────────────────────────
 
@@ -298,7 +313,7 @@ class TestAfterGetsysidGetitanmodes:
             _ok_run(),                      # getitanmodes
             _ok_run(stdout=tan_modes_output),  # listitanmodes (retry, finds modes)
             _ok_run(),                      # setitanmode
-        ]), patch("src.setup.os.close"):
+        ]), _patch_pty_getaccounts():
             result = session._after_getsysid()
         assert result["status"] == "pending_confirm"
         assert result["auto_selected_tan_mode"] == 6900
@@ -311,7 +326,7 @@ class TestAfterGetsysidGetitanmodes:
             _ok_run(stdout=""),  # listitanmodes (empty)
             _ok_run(),           # getitanmodes
             _ok_run(stdout=""),  # listitanmodes (retry, still empty)
-        ]), patch("src.setup.os.close"):
+        ]), _patch_pty_getaccounts():
             result = session._after_getsysid()
         assert result["status"] == "pending_confirm"
         assert result["tan_modes"] == []
@@ -323,7 +338,7 @@ class TestAfterGetsysidGetitanmodes:
             _ok_run(stdout=""),                        # listitanmodes (empty)
             _ok_run(returncode=1, stderr="timeout"),   # getitanmodes (fails)
             _ok_run(stdout=""),                        # listitanmodes (retry)
-        ]), patch("src.setup.os.close"):
+        ]), _patch_pty_getaccounts():
             result = session._after_getsysid()
         assert result["status"] == "pending_confirm"
 
@@ -333,9 +348,9 @@ class TestSetupSessionStep1b:
         session = _make_session_with_cert_proc(tan_mode=7940)
         tan_output = "  7940 : DKB App\n"
         with patch("src.setup.subprocess.run", return_value=_ok_run(stdout=tan_output)), \
-             patch("src.setup.subprocess.Popen"), \
              patch("src.setup.os.close"), \
-             patch("src.setup.select.select", return_value=([], [], [])):
+             patch("src.setup.select.select", return_value=([], [], [])), \
+             _patch_pty_getaccounts():
             result = session.step1b_accept_cert(True)
         assert result["status"] == "pending_confirm"
         assert result["auto_selected_tan_mode"] == 7940
@@ -369,7 +384,8 @@ class TestSetupSessionStep2:
     def test_sets_tan_mode_returns_pending_confirm(self):
         session = _make_session(tan_mode=None)
         session.user_index = "1"
-        with patch("src.setup.subprocess.run", return_value=_ok_run()):
+        with patch("src.setup.subprocess.run", return_value=_ok_run()), \
+             _patch_pty_getaccounts():
             result = session.step2_set_tanmode(6903)
         assert result["status"] == "pending_confirm"
         assert session.tan_mode == 6903

@@ -87,3 +87,11 @@ class TestSyncConfirmDryRun:
     def test_unknown_account_returns_404(self, sync_client):
         resp = sync_client.post("/sync/unknown/confirm?dry_run=true")
         assert resp.status_code == 404
+
+
+class TestWebUI:
+    def test_index_returns_html(self, sync_client):
+        resp = sync_client.get("/")
+        assert resp.status_code == 200
+        assert b"txporter" in resp.data
+        assert b"text/html" in resp.content_type.encode()

@@ -5,7 +5,7 @@ Exposes endpoints to trigger transaction sync from financial accounts.
 
 import uuid
 
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, render_template, request
 from aqbanking import AqBankingClient
 from config import load_config
 import setup as bank_setup
@@ -23,6 +23,12 @@ _pending_syncs = {}
 
 # Stores in-progress bank setup sessions { setup_id: SetupSession }
 _pending_setups = {}
+
+
+@app.route("/", methods=["GET"])
+def index():
+    """Serve the web UI."""
+    return render_template("index.html")
 
 
 @app.route("/health", methods=["GET"])
@@ -72,9 +78,31 @@ def list_accounts():
             "type": a["type"],
             **({"aqbanking_id": a["aqbanking_id"]} if "aqbanking_id" in a else {}),
             **({"iban": a["iban"]} if "iban" in a else {}),
+            **({"account_number": a["account_number"]} if "account_number" in a else {}),
+            **({"bank_code_aq": a["bank_code_aq"]} if "bank_code_aq" in a else {}),
+            **({"account_type_label": bank_setup._ACCOUNT_TYPE_LABELS.get(
+                a["account_type_label"].lower(), a["account_type_label"]
+            )} if "account_type_label" in a else {}),
         }
         for a in cfg["accounts"]
     ])
+
+
+@app.route("/accounts/<account_id>/rename", methods=["POST"])
+def rename_account(account_id):
+    """Update the display name of an account."""
+    body = request.get_json(force=True, silent=True) or {}
+    new_name = body.get("name", "").strip()
+    if not new_name:
+        return jsonify({"error": "Field 'name' is required"}), 400
+    cfg = bank_setup.load_config()
+    account = next((a for a in cfg["accounts"] if a["id"] == account_id), None)
+    if not account:
+        return jsonify({"error": f"Account '{account_id}' not found"}), 404
+    account["name"] = new_name
+    bank_setup.save_config(cfg)
+    config["accounts"] = cfg["accounts"]
+    return jsonify({"status": "ok"})
 
 
 @app.route("/accounts/<account_ref>", methods=["DELETE"])
@@ -103,6 +131,94 @@ def delete_account(account_ref):
     bank_setup.save_config(cfg)
     config["accounts"] = cfg["accounts"]
     return jsonify({"status": "ok", "deleted": account_ref})
+
+
+@app.route("/aqbanking/accounts", methods=["GET"])
+def list_aqbanking_accounts():
+    """List all accounts known to AqBanking, with a flag for which are already in banks.json."""
+    import subprocess
+    result = subprocess.run(
+        ["aqhbci-tool4", "listaccounts", "-v"], capture_output=True, text=True
+    )
+    all_aq = bank_setup._parse_listaccounts(result.stdout)
+    cfg = bank_setup.load_config()
+    configured_keys = {
+        (a.get("account_number"), a.get("bank_code_aq"))
+        for a in cfg["accounts"]
+        if a.get("account_number") and a.get("bank_code_aq")
+    }
+    for acc in all_aq:
+        acc["configured"] = (acc.get("account_number"), acc.get("bank_code")) in configured_keys
+    return jsonify(all_aq)
+
+
+@app.route("/aqbanking/accounts/<int:aqbanking_id>/import", methods=["POST"])
+def import_aqbanking_account(aqbanking_id):
+    """Add an AqBanking account to banks.json without re-running the setup wizard.
+
+    Copies connection details (url, login, blz, …) from the existing banks.json
+    entry that shares the same bank code.  Body: { "name": "...", "id": "..." }
+    """
+    import subprocess
+    body = request.get_json(force=True, silent=True) or {}
+    name = body.get("name", "").strip()
+    if not name:
+        return jsonify({"error": "Field 'name' is required"}), 400
+
+    result = subprocess.run(
+        ["aqhbci-tool4", "listaccounts", "-v"], capture_output=True, text=True
+    )
+    all_aq = bank_setup._parse_listaccounts(result.stdout)
+    aq_acc = next((a for a in all_aq if a.get("aqbanking_id") == aqbanking_id), None)
+    if aq_acc is None:
+        return jsonify({"error": f"AqBanking account {aqbanking_id} not found"}), 404
+
+    cfg = bank_setup.load_config()
+
+    # Verify not already configured
+    bank_code = aq_acc.get("bank_code")
+    account_number = aq_acc.get("account_number")
+    for existing in cfg["accounts"]:
+        if (existing.get("account_number") == account_number
+                and existing.get("bank_code_aq") == bank_code):
+            return jsonify({"error": f"Already configured as '{existing['id']}'"}), 409
+
+    # Find a same-bank entry to copy connection details from
+    same_bank = next(
+        (a for a in cfg["accounts"] if a.get("bank_code_aq") == bank_code
+         or a.get("blz") == bank_code),
+        None
+    )
+    if same_bank is None:
+        return jsonify({"error": "No existing configuration for this bank. Run full setup first."}), 400
+
+    account_id = body.get("id", "").strip() or name.lower().replace(" ", "_")
+    if any(a["id"] == account_id for a in cfg["accounts"]):
+        return jsonify({"error": f"Account id '{account_id}' already exists"}), 409
+
+    new_account = {
+        "id": account_id,
+        "name": name,
+        "type": same_bank.get("type", "fints"),
+        "blz": same_bank.get("blz"),
+        "url": same_bank.get("url"),
+        "login": same_bank.get("login"),
+        "hbci_version": same_bank.get("hbci_version", 300),
+        "aqbanking_id": aqbanking_id,
+        "account_number": account_number,
+        "bank_code_aq": bank_code,
+    }
+    if same_bank.get("tan_mode"):
+        new_account["tan_mode"] = same_bank["tan_mode"]
+    if aq_acc.get("iban"):
+        new_account["iban"] = aq_acc["iban"]
+    if aq_acc.get("account_type_label"):
+        new_account["account_type_label"] = aq_acc["account_type_label"]
+
+    cfg["accounts"].append(new_account)
+    bank_setup.save_config(cfg)
+    config["accounts"] = cfg["accounts"]
+    return jsonify({"status": "ok", "account": new_account})
 
 
 @app.route("/setup/profiles", methods=["GET"])
@@ -292,9 +408,35 @@ def setup_confirm(setup_id):
         logger.error("Setup step 3 failed for %s: %s", setup_id, e)
         return jsonify({"error": str(e)}), 500
 
-    if result.get("status") == "pending_tan":
-        _pending_setups[setup_id] = session  # keep alive for /tan submission
+    if result.get("status") in ("pending_tan", "pending_account_select"):
+        _pending_setups[setup_id] = session
         return jsonify(result), 202
+
+    config["accounts"] = bank_setup.load_config()["accounts"]
+    return jsonify(result)
+
+
+@app.route("/setup/<setup_id>/selectaccount", methods=["POST"])
+def setup_select_account(setup_id):
+    """Step 3c: choose which AqBanking account to link when auto-detection failed.
+
+    Body: { "aqbanking_id": 9 }
+    """
+    if setup_id not in _pending_setups:
+        return jsonify({"error": f"No pending setup for id '{setup_id}'"}), 404
+
+    body = request.get_json(force=True, silent=True) or {}
+    aqbanking_id = body.get("aqbanking_id")
+    if aqbanking_id is None:
+        return jsonify({"error": "Field 'aqbanking_id' is required"}), 400
+
+    session = _pending_setups.pop(setup_id)
+    try:
+        result = session.select_account(int(aqbanking_id))
+    except Exception as e:
+        _pending_setups[setup_id] = session
+        logger.error("Account selection failed for %s: %s", setup_id, e)
+        return jsonify({"error": str(e)}), 500
 
     config["accounts"] = bank_setup.load_config()["accounts"]
     return jsonify(result)
@@ -320,8 +462,8 @@ def start_sync(account: dict) -> dict:
         else:
             transactions = client.fetch_transactions()
             logger.info(f"Fetched {len(transactions)} transactions from {account_id}")
-            _forward_to_targets(transactions, account)
-            return {"status": "ok", "transactions": len(transactions)}
+            stats = _forward_to_targets(transactions, account)
+            return {"status": "ok", **stats}
     except Exception as e:
         logger.error(f"Error starting sync for {account_id}: {e}")
         return {"status": "error", "message": str(e)}
@@ -339,20 +481,22 @@ def complete_sync(account_id: str, dry_run: bool = False) -> dict:
         logger.info(f"Fetched {len(transactions)} transactions from {account_id}")
         if dry_run:
             return {"status": "dry_run", "transactions": transactions}
-        _forward_to_targets(transactions, account)
-        return {"status": "ok", "transactions": len(transactions)}
+        stats = _forward_to_targets(transactions, account)
+        return {"status": "ok", **stats}
     except Exception as e:
         logger.error(f"Error completing sync for {account_id}: {e}")
         return {"status": "error", "message": str(e)}
 
 
-def _forward_to_targets(transactions: list, account: dict):
+def _forward_to_targets(transactions: list, account: dict) -> dict:
+    """Forward transactions to all enabled targets. Returns import stats from Firefly (if enabled)."""
+    stats = {}
     for target_name, target_config in config["targets"].items():
         if not target_config.get("enabled"):
             continue
         if target_name == "firefly":
             from firefly import FireflyClient
-            FireflyClient(target_config).import_transactions(transactions, account)
+            stats = FireflyClient(target_config).import_transactions(transactions, account)
         elif target_name == "csv":
             import csv as csv_module
             import os
@@ -364,6 +508,7 @@ def _forward_to_targets(transactions: list, account: dict):
                 writer.writeheader()
                 writer.writerows(transactions)
             logger.info(f"Wrote {len(transactions)} transactions to {filename}")
+    return stats
 
 
 if __name__ == "__main__":

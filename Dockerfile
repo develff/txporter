@@ -12,8 +12,11 @@ RUN zypper --non-interactive refresh && \
         curl \
     && zypper clean --all
 
-# Create non-root user
-RUN useradd -m -s /bin/bash txporter
+# Create non-root user and pre-create the AqBanking data directory so that
+# a freshly mounted (empty) Docker volume is already owned by txporter.
+RUN useradd -m -s /bin/bash txporter && \
+    mkdir -p /home/txporter/.aqbanking && \
+    chown -R txporter:txporter /home/txporter/.aqbanking
 USER txporter
 WORKDIR /home/txporter
 
