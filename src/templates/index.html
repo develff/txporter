@@ -1018,6 +1018,24 @@ function triggerDownload(transactions, format, accountId) {
 
 // ── Scheduler settings ─────────────────────────────────────────────────────────
 
+function schedHourSelect(timeVal, disabled) {
+  const cur = timeVal ? parseInt(timeVal.split(":")[0]) : 20;
+  const opts = Array.from({length: 24}, (_, h) =>
+    `<option value="${h}" ${h === cur ? "selected" : ""}>${String(h).padStart(2,"0")}</option>`
+  ).join("");
+  return `<select id="sched-hour" ${disabled ? "disabled" : ""} style="width:72px">${opts}</select>`;
+}
+
+function schedMinuteSelect(timeVal, disabled) {
+  const cur = timeVal ? parseInt(timeVal.split(":")[1]) : 0;
+  const minutes = [0,5,10,15,20,25,30,35,40,45,50,55];
+  const nearest = minutes.reduce((a, b) => Math.abs(b - cur) < Math.abs(a - cur) ? b : a);
+  const opts = minutes.map(m =>
+    `<option value="${m}" ${m === nearest ? "selected" : ""}>${String(m).padStart(2,"0")}</option>`
+  ).join("");
+  return `<select id="sched-minute" ${disabled ? "disabled" : ""} style="width:72px">${opts}</select>`;
+}
+
 async function openSchedulerModal() {
   let cfg = { enabled: false, time: "20:00", webhook_url: "", next_run: null };
   try { cfg = await api("GET", "/scheduler"); } catch (_) {}
@@ -1052,8 +1070,11 @@ function schedulerSettingsScreen(cfg) {
     </div>
     <div class="form-group" id="sched-time-group" ${!enabled ? 'style="opacity:.5"' : ""}>
       <label>Time (daily) <span style="font-weight:400;text-transform:none">${esc(cfg.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone)}</span></label>
-      <input type="time" id="sched-time" value="${esc(timeVal)}" ${!enabled ? "disabled" : ""}
-        style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius);font-size:14px;color:var(--text)">
+      <div style="display:flex;align-items:center;gap:6px">
+        ${schedHourSelect(timeVal, !enabled)}
+        <span style="font-size:16px;color:var(--text-muted);font-weight:500">:</span>
+        ${schedMinuteSelect(timeVal, !enabled)}
+      </div>
     </div>
     <div class="form-group">
       <label>Webhook URL <span style="font-weight:400;text-transform:none">(optional — called on failure)</span></label>
@@ -1069,14 +1090,16 @@ function schedulerSettingsScreen(cfg) {
 function onSchedEnabledChange() {
   const enabled = document.getElementById("sched-enabled").checked;
   const group = document.getElementById("sched-time-group");
-  const timeInput = document.getElementById("sched-time");
   group.style.opacity = enabled ? "" : ".5";
-  timeInput.disabled = !enabled;
+  document.getElementById("sched-hour").disabled = !enabled;
+  document.getElementById("sched-minute").disabled = !enabled;
 }
 
 async function saveScheduler() {
   const enabled = document.getElementById("sched-enabled").checked;
-  const time = document.getElementById("sched-time").value.trim();
+  const h = String(document.getElementById("sched-hour").value).padStart(2, "0");
+  const m = String(document.getElementById("sched-minute").value).padStart(2, "0");
+  const time = `${h}:${m}`;
   const webhookUrl = document.getElementById("sched-webhook").value.trim();
   if (enabled && !time) { prependAlert("alert-warn", "Time is required when scheduler is enabled."); return; }
   const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
