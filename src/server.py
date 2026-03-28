@@ -5,7 +5,7 @@ Exposes endpoints to trigger transaction sync from financial accounts.
 
 import uuid
 
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, render_template, request
 from aqbanking import AqBankingClient
 from config import load_config
 import setup as bank_setup
@@ -23,6 +23,12 @@ _pending_syncs = {}
 
 # Stores in-progress bank setup sessions { setup_id: SetupSession }
 _pending_setups = {}
+
+
+@app.route("/", methods=["GET"])
+def index():
+    """Serve the web UI."""
+    return render_template("index.html")
 
 
 @app.route("/health", methods=["GET"])
