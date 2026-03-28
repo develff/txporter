@@ -91,11 +91,10 @@ class FireflyClient:
         currency = transactions[0].get("currency_code", "EUR")
         account_name = account.get("name", "")
         firefly_account_id = self._ensure_asset_account(account_name, currency, account)
-        start_date = self._dedup_start_date(transactions)
-        existing_ids = self._fetch_existing_external_ids(firefly_account_id, start_date=start_date)
+        existing_ids = self._fetch_existing_external_ids(firefly_account_id)
         logger.info(
-            "Firefly account '%s': %d existing external_ids loaded (from %s)",
-            account_name, len(existing_ids), start_date or "beginning",
+            "Firefly account '%s': %d existing external_ids loaded",
+            account_name, len(existing_ids),
         )
 
         for tx in transactions:
