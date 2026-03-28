@@ -131,6 +131,50 @@ class TestParseListaccounts:
         assert _parse_listaccounts("") == []
 
 
+# ── SetupSession._find_aqbanking_id / _find_iban ───────────────────────────────
+
+class TestFindAccount:
+    # DKB: login is unrelated to account number → BLZ match
+    ACCOUNTS_DKB = [
+        {"bank_code": "12030000", "account_number": "1234567890", "aqbanking_id": 1, "iban": "DE11"},
+    ]
+    # Consorsbank: Verrechnungskonto has a different BLZ (70120400), but
+    # account_number is a prefix of the login ("7163657005001" → "7163657005").
+    ACCOUNTS_CONSORS = [
+        {"bank_code": "76030080", "account_number": "418407408",  "aqbanking_id": 10, "iban": None},
+        {"bank_code": "70120400", "account_number": "7163657005", "aqbanking_id": 9,  "iban": "DE99"},
+    ]
+
+    def _session(self, blz, login):
+        return SetupSession("id", "acc", login, blz, "https://x", 300, None, "name")
+
+    def test_dkb_matches_by_blz(self):
+        s = self._session("12030000", "12345678")
+        assert s._find_aqbanking_id(self.ACCOUNTS_DKB) == 1
+
+    def test_consorsbank_prefers_login_prefix_over_blz(self):
+        """Verrechnungskonto (different BLZ) wins because account_number is
+        a prefix of the login; the depot account (matching BLZ) is skipped."""
+        s = self._session("76030080", "7163657005001")
+        assert s._find_aqbanking_id(self.ACCOUNTS_CONSORS) == 9
+
+    def test_returns_none_when_no_match(self):
+        s = self._session("99999999", "000")
+        assert s._find_aqbanking_id(self.ACCOUNTS_CONSORS) is None
+
+    def test_find_iban_dkb(self):
+        s = self._session("12030000", "12345678")
+        assert s._find_iban(self.ACCOUNTS_DKB) == "DE11"
+
+    def test_find_iban_consorsbank_fallback(self):
+        s = self._session("76030080", "7163657005001")
+        assert s._find_iban(self.ACCOUNTS_CONSORS) == "DE99"
+
+    def test_find_iban_returns_none_when_no_match(self):
+        s = self._session("99999999", "000")
+        assert s._find_iban(self.ACCOUNTS_CONSORS) is None
+
+
 # ── SetupSession ───────────────────────────────────────────────────────────────
 
 def _make_session(tan_mode=7940) -> SetupSession:
@@ -238,6 +282,50 @@ class TestSetupSessionStep1:
              patch("src.setup._resolve_user_index", return_value="1"):
             with pytest.raises(RuntimeError, match="adduser failed"):
                 session.step1_register()
+
+
+class TestAfterGetsysidGetitanmodes:
+    """Tests for the Consorsbank path: getsysid returns no TAN modes in BPD,
+    so getitanmodes is called explicitly to query them from the bank."""
+
+    def test_calls_getitanmodes_when_listitanmodes_empty_then_finds_modes(self):
+        """If listitanmodes is empty after getsysid, getitanmodes is called,
+        and then listitanmodes is retried — if it then returns modes, auto-select proceeds."""
+        session = _make_session_with_cert_proc(tan_mode=6900)
+        tan_modes_output = "  6900 : pushTAN\n"
+        with patch("src.setup.subprocess.run", side_effect=[
+            _ok_run(stdout=""),             # listitanmodes (empty)
+            _ok_run(),                      # getitanmodes
+            _ok_run(stdout=tan_modes_output),  # listitanmodes (retry, finds modes)
+            _ok_run(),                      # setitanmode
+        ]), patch("src.setup.os.close"):
+            result = session._after_getsysid()
+        assert result["status"] == "pending_confirm"
+        assert result["auto_selected_tan_mode"] == 6900
+
+    def test_calls_getitanmodes_when_listitanmodes_empty_remains_empty(self):
+        """If getitanmodes is called but listitanmodes still returns nothing,
+        we proceed without a TAN mode (one-step TAN fallback)."""
+        session = _make_session_with_cert_proc(tan_mode=None)
+        with patch("src.setup.subprocess.run", side_effect=[
+            _ok_run(stdout=""),  # listitanmodes (empty)
+            _ok_run(),           # getitanmodes
+            _ok_run(stdout=""),  # listitanmodes (retry, still empty)
+        ]), patch("src.setup.os.close"):
+            result = session._after_getsysid()
+        assert result["status"] == "pending_confirm"
+        assert result["tan_modes"] == []
+
+    def test_getitanmodes_failure_is_non_fatal(self):
+        """getitanmodes failure only logs a warning; setup continues."""
+        session = _make_session_with_cert_proc(tan_mode=None)
+        with patch("src.setup.subprocess.run", side_effect=[
+            _ok_run(stdout=""),                        # listitanmodes (empty)
+            _ok_run(returncode=1, stderr="timeout"),   # getitanmodes (fails)
+            _ok_run(stdout=""),                        # listitanmodes (retry)
+        ]), patch("src.setup.os.close"):
+            result = session._after_getsysid()
+        assert result["status"] == "pending_confirm"
 
 
 class TestSetupSessionStep1b:
@@ -455,6 +543,7 @@ def client(tmp_path):
     profiles = {
         "dkb": {"blz": "12030000", "url": "https://fints.dkb.de/fints", "hbci_version": 300, "tan_mode": 7940},
         "1822direkt": {"blz": "50050222", "url": "https://fints.1822direkt.com/fints/hbci", "hbci_version": 300, "tan_mode": 6903},
+        "consorsbank": {"blz": "76030080", "url": "https://brokerage-hbci.consorsbank.de/hbci", "hbci_version": 300, "tan_mode": 6900},
     }
     with open(config_path, "w") as f:
         json.dump(initial_config, f)
@@ -564,6 +653,24 @@ class TestSetupStartEndpoint:
                 "login": "user1", "pin": "1234", "name": "My Bank", "hbci_version": 300,
             })
         assert resp.status_code == 202
+
+    def test_consorsbank_profile_setup(self, client):
+        """Consorsbank profile is resolved correctly; login format is preserved."""
+        step1_result = {"setup_id": "uuid-c", "status": "pending_cert",
+                        "message": "Accept cert via POST /setup/uuid-c/acceptcert",
+                        "certificate": {"name": "brokerage-hbci.consorsbank.de"}}
+        with self._mock_step1(step1_result), \
+             patch("src.server.bank_setup._write_pin"):
+            resp = client.post("/setup", json={
+                "bank": "consorsbank", "login": "9001234560001", "pin": "1234"
+            })
+        assert resp.status_code == 202
+        assert resp.get_json()["status"] == "pending_cert"
+        import src.server as server_mod
+        session = list(server_mod._pending_setups.values())[0]
+        assert session.blz == "76030080"
+        assert session.login == "9001234560001"
+        assert session.tan_mode == 6900
 
     def test_profile_tan_mode_overridable(self, client):
         step1_result = {"setup_id": "uuid-1", "status": "pending_confirm",

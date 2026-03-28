@@ -531,17 +531,34 @@ class SetupSession:
         result = subprocess.run(["aqhbci-tool4", "listaccounts", "-v"], capture_output=True, text=True)
         return _parse_listaccounts(result.stdout)
 
-    def _find_aqbanking_id(self, accounts: list) -> Optional[int]:
+    def _find_account(self, accounts: list) -> Optional[dict]:
+        """Find the most relevant account from listaccounts output.
+
+        Heuristic used when the user has not explicitly selected an account
+        (i.e. no UI). Prefers login-prefix match over BLZ match because some
+        brokers (e.g. Consorsbank) register their Verrechnungskonto under a
+        different BLZ than the one used for setup (Consorsbank: setup BLZ
+        76030080, Verrechnungskonto BLZ 70120400 / HypoVereinsbank).
+
+        TODO: remove once issue #17 (UI) lets users select the account
+        explicitly during setup.
+        """
+        for acc in accounts:
+            number = acc.get("account_number", "")
+            if number and self.login.startswith(number):
+                return acc
         for acc in accounts:
             if acc.get("bank_code") == self.blz:
-                return acc.get("aqbanking_id")
+                return acc
         return None
 
+    def _find_aqbanking_id(self, accounts: list) -> Optional[int]:
+        acc = self._find_account(accounts)
+        return acc.get("aqbanking_id") if acc else None
+
     def _find_iban(self, accounts: list) -> Optional[str]:
-        for acc in accounts:
-            if acc.get("bank_code") == self.blz:
-                return acc.get("iban")
-        return None
+        acc = self._find_account(accounts)
+        return acc.get("iban") if acc else None
 
     def _write_back(self, aqbanking_id: Optional[int], iban: Optional[str]):
         """Write aqbanking_id (and iban if found) back into banks.json."""
