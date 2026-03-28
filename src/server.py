@@ -80,7 +80,9 @@ def list_accounts():
             **({"iban": a["iban"]} if "iban" in a else {}),
             **({"account_number": a["account_number"]} if "account_number" in a else {}),
             **({"bank_code_aq": a["bank_code_aq"]} if "bank_code_aq" in a else {}),
-            **({"account_type_label": a["account_type_label"]} if "account_type_label" in a else {}),
+            **({"account_type_label": bank_setup._ACCOUNT_TYPE_LABELS.get(
+                a["account_type_label"].lower(), a["account_type_label"]
+            )} if "account_type_label" in a else {}),
         }
         for a in cfg["accounts"]
     ])
