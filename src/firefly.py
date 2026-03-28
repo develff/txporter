@@ -45,27 +45,56 @@ class FireflyClient:
             "Accept": "application/json"
         }
 
-    def import_transactions(self, transactions: list, account: dict):
-        """Import a list of transactions into Firefly III."""
-        if transactions:
-            currency = transactions[0].get("currency_code", "EUR")
-            self._ensure_asset_account(account.get("name", ""), currency)
-        for tx in transactions:
-            self._create_transaction(tx, account)
+    def import_transactions(self, transactions: list, account: dict) -> dict:
+        """Import a list of transactions into Firefly III.
 
-    def _ensure_asset_account(self, name: str, currency_code: str):
-        """Create the asset account in Firefly III if it does not exist yet."""
+        Returns {"found": N, "imported": Y, "skipped": Z}.
+        Skips transactions whose external_id already exists in Firefly III.
+        """
+        found = len(transactions)
+        imported = 0
+        skipped = 0
+
+        if not transactions:
+            return {"found": 0, "imported": 0, "skipped": 0}
+
+        currency = transactions[0].get("currency_code", "EUR")
+        account_name = account.get("name", "")
+        firefly_account_id = self._ensure_asset_account(account_name, currency)
+        existing_ids = self._fetch_existing_external_ids(firefly_account_id)
+        logger.info("Firefly account '%s': %d existing external_ids loaded", account_name, len(existing_ids))
+
+        for tx in transactions:
+            ext_id = tx.get("external_id", "")
+            if ext_id and ext_id in existing_ids:
+                logger.debug("Skipping duplicate external_id=%s", ext_id)
+                skipped += 1
+                continue
+            if self._create_transaction(tx, account):
+                imported += 1
+                if ext_id:
+                    existing_ids.add(ext_id)
+            else:
+                skipped += 1
+
+        logger.info("Import complete: %d found, %d imported, %d skipped", found, imported, skipped)
+        return {"found": found, "imported": imported, "skipped": skipped}
+
+    def _ensure_asset_account(self, name: str, currency_code: str) -> str | None:
+        """Create the asset account in Firefly III if it does not exist yet.
+
+        Returns the Firefly III account ID, or None on failure.
+        """
         response = requests.get(
             f"{self.base_url}/api/v1/accounts",
             headers=self.headers,
             params={"type": "asset", "limit": 100},
         )
         if response.ok:
-            accounts = response.json().get("data", [])
-            for a in accounts:
+            for a in response.json().get("data", []):
                 if a.get("attributes", {}).get("name") == name:
                     logger.debug("Asset account already exists: %s", name)
-                    return
+                    return a.get("id")
 
         logger.info("Creating asset account: %s", name)
         payload = {"name": name, "type": "asset", "account_role": "defaultAsset", "currency_code": currency_code}
@@ -76,15 +105,48 @@ class FireflyClient:
         )
         if resp.ok:
             logger.info("Created asset account: %s", name)
+            return resp.json().get("data", {}).get("id")
         else:
             logger.error("Failed to create asset account %s: %s", name, resp.text)
+            return None
 
-    def _create_transaction(self, tx: dict, account: dict):
-        """Create a single transaction in Firefly III."""
+    def _fetch_existing_external_ids(self, firefly_account_id: str | None) -> set:
+        """Fetch all external_ids of existing transactions for the given asset account."""
+        if firefly_account_id is None:
+            return set()
+        external_ids = set()
+        page = 1
+        while True:
+            response = requests.get(
+                f"{self.base_url}/api/v1/accounts/{firefly_account_id}/transactions",
+                headers=self.headers,
+                params={"limit": 100, "page": page},
+            )
+            if not response.ok:
+                logger.warning("Could not fetch transactions for account %s (page %d): %s",
+                               firefly_account_id, page, response.status_code)
+                break
+            data = response.json()
+            rows = data.get("data", [])
+            if not rows:
+                break
+            for row in rows:
+                for split in row.get("attributes", {}).get("transactions", []):
+                    ext_id = split.get("external_id", "")
+                    if ext_id:
+                        external_ids.add(ext_id)
+            pagination = data.get("meta", {}).get("pagination", {})
+            if page >= pagination.get("total_pages", 1):
+                break
+            page += 1
+        return external_ids
+
+    def _create_transaction(self, tx: dict, account: dict) -> bool:
+        """Create a single transaction in Firefly III. Returns True on success, False on skip/error."""
         amount_eur = tx.get("amount_eur", 0.0)
         if amount_eur == 0.0:
             logger.debug("Skipping zero-amount transaction external_id=%s", tx.get("external_id"))
-            return
+            return False
         is_withdrawal = amount_eur < 0
         tx_type = "withdrawal" if is_withdrawal else "deposit"
         amount = f"{abs(amount_eur):.2f}"
@@ -136,5 +198,7 @@ class FireflyClient:
                 "Failed to create transaction external_id=%s status=%s: %s",
                 tx.get("external_id"), response.status_code, message,
             )
+            return False
         else:
             logger.debug("Created transaction external_id=%s", tx.get("external_id"))
+            return True

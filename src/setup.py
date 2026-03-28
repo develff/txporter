@@ -72,15 +72,26 @@ def _parse_tan_modes(output: str) -> list:
     return modes
 
 
+_ACCOUNT_TYPE_LABELS = {
+    "bank":        "Girokonto",
+    "savings":     "Sparkonto",
+    "investment":  "Depot",
+    "creditCard":  "Kreditkarte",
+    "moneyMarket": "Tagesgeld",
+    "cash":        "Kasse",
+}
+
+
 def _parse_listaccounts(output: str) -> list:
     """Parse aqhbci-tool4 listaccounts -v output into a list of account dicts.
 
     AqBanking 6.9.x emits one line per account:
-      Account N: Bank: BBBBBBBB Account Number: NNNN ... LocalUniqueId: X
+      Account N: Bank: BBBBBBBB Account Number: NNNN Name: X ... Account Type: Y LocalUniqueId: Z
 
     Each returned dict contains:
       aqbanking_id (int|None), bank_code (str|None), account_number (str|None),
-      iban (str|None)
+      iban (str|None), account_type (str|None), account_type_label (str|None),
+      owner_name (str|None)
     """
     accounts = []
     for line in output.splitlines():
@@ -95,6 +106,11 @@ def _parse_listaccounts(output: str) -> list:
         acc["account_number"] = m.group(1) if m else None
         m = re.search(r"IBAN:\s*(\S+)", line)
         acc["iban"] = m.group(1) if m else None
+        m = re.search(r"Account Type:\s*(\S+)", line)
+        acc["account_type"] = m.group(1) if m else None
+        acc["account_type_label"] = _ACCOUNT_TYPE_LABELS.get(acc["account_type"], acc["account_type"]) if acc["account_type"] else None
+        m = re.search(r"\bName:\s*([^,\n]+?)(?=\s+\w+:|$)", line)
+        acc["owner_name"] = m.group(1).strip() if m else None
         accounts.append(acc)
     return accounts
 
@@ -148,6 +164,19 @@ class SetupSession:
         self.user_index: Optional[str] = None
         self.cert_proc = None  # getsysid Popen, waiting for certificate acceptance
         self.proc = None       # getaccounts Popen, waiting for TAN confirmation
+        self._pending_accounts: list = []  # set when user must select account
+        # Snapshot of aqbanking_ids that already existed before this setup started.
+        # Lets _listaccounts_for_user return only newly added accounts.
+        try:
+            existing = subprocess.run(
+                ["aqhbci-tool4", "listaccounts", "-v"], capture_output=True, text=True
+            )
+            self._pre_existing_ids: set = {
+                a["aqbanking_id"] for a in _parse_listaccounts(existing.stdout)
+                if "aqbanking_id" in a
+            }
+        except Exception:
+            self._pre_existing_ids = set()
 
     def step1_register(self) -> dict:
         """Run adduser, then start getsysid in a PTY.
@@ -192,6 +221,8 @@ class SetupSession:
 
         if self.tan_mode is not None:
             self._run_setitanmode(self.tan_mode)
+            self._start_getaccounts()  # Sends request to bank → triggers push notification now
+            self._drain_acc_prompts_briefly()
             return {
                 "setup_id": self.setup_id,
                 "status": "pending_confirm",
@@ -201,6 +232,8 @@ class SetupSession:
             }
         if not tan_modes:
             # Still no modes — bank uses One-Step TAN; proceed directly.
+            self._start_getaccounts()
+            self._drain_acc_prompts_briefly()
             return {
                 "setup_id": self.setup_id,
                 "status": "pending_confirm",
@@ -215,8 +248,10 @@ class SetupSession:
         }
 
     def step2_set_tanmode(self, tan_mode: int) -> dict:
-        """Set TAN mode (getaccounts is triggered in step3_confirm)."""
+        """Set TAN mode and start getaccounts (triggers push notification immediately)."""
         self._run_setitanmode(tan_mode)
+        self._start_getaccounts()
+        self._drain_acc_prompts_briefly()
         return {
             "setup_id": self.setup_id,
             "status": "pending_confirm",
@@ -224,8 +259,14 @@ class SetupSession:
         }
 
     def step3_confirm(self, timeout: int = 120) -> dict:
-        """Start getaccounts; returns pending_tan if the bank requires TAN entry."""
-        self._start_getaccounts()
+        """Wait for getaccounts to complete; returns pending_tan if TAN entry required.
+
+        getaccounts is normally pre-started in _after_getsysid / step2_set_tanmode
+        so that the push notification reaches the banking app before the user
+        has to click Done. The start here is a fallback only.
+        """
+        if self.proc is None:
+            self._start_getaccounts()
         challenge = self._wait_for_tan_prompt_or_exit(timeout)
         if challenge is not None:
             return {
@@ -325,6 +366,7 @@ class SetupSession:
         """Read PTY output until GWEN's cert prompt appears; return parsed cert info.
 
         Returns an empty dict if the process exits before prompting (cert already trusted).
+        Stale lock prompts are handled automatically by selecting 'Remove Lock'.
         """
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -338,6 +380,15 @@ class SetupSession:
                 except OSError:
                     break
             if b"Please enter your choice:" in self._cert_output:
+                if b"Possible Stale Lock" in self._cert_output:
+                    logger.warning("Stale AqBanking lock detected during getsysid — removing automatically")
+                    try:
+                        os.write(self._cert_master_fd, b"2\n")
+                    except OSError:
+                        pass
+                    self._cert_output = b""
+                    deadline += 10  # allow extra time for getsysid to continue
+                    continue
                 return _parse_cert_info(self._cert_output.decode("utf-8", errors="replace"))
         return {}
 
@@ -436,6 +487,7 @@ class SetupSession:
         """
         deadline = time.monotonic() + timeout
         pty_eof = False
+        last_log = time.monotonic()
         while time.monotonic() < deadline:
             if self.proc.poll() is not None:
                 # Drain any remaining PTY output before deciding.
@@ -459,6 +511,31 @@ class SetupSession:
                 except OSError:
                     pty_eof = True
                     break
+
+            if time.monotonic() - last_log >= 15:
+                elapsed = timeout - (deadline - time.monotonic())
+                logger.info("getaccounts still running after %.0fs, output so far: %r",
+                            elapsed, self._acc_output[-500:])
+                last_log = time.monotonic()
+
+            if b"Please enter your choice:" in self._acc_output:
+                if b"Possible Stale Lock" in self._acc_output:
+                    logger.warning("Stale AqBanking lock detected during getaccounts — removing automatically")
+                    try:
+                        os.write(self._acc_master_fd, b"2\n")
+                    except OSError:
+                        pass
+                    self._acc_output = b""
+                    deadline += 10
+                    continue
+                if b"(1) Approved" in self._acc_output or b"Decoupled Mode" in self._acc_output:
+                    logger.info("Decoupled Mode approval prompt detected — sending approval (1)")
+                    try:
+                        os.write(self._acc_master_fd, b"1\n")
+                    except OSError:
+                        pass
+                    self._acc_output = b""
+                    continue
 
             if b"Input:" in self._acc_output:
                 return self._extract_tan_challenge()
@@ -485,7 +562,56 @@ class SetupSession:
             os.close(self._acc_master_fd)
         except OSError:
             pass
+        output_text = self._acc_output.decode("utf-8", errors="replace")
+        logger.error("getaccounts timed out after %ds. Full output: %r", timeout, output_text)
         raise RuntimeError("getaccounts timed out")
+
+    def _drain_acc_prompts_briefly(self, timeout: float = 8.0):
+        """Read getaccounts PTY output for a short window, resolving stale lock prompts.
+
+        Called immediately after _start_getaccounts() so that any stale lock dialog
+        is answered before the HTTP response is returned to the caller.  This ensures
+        getaccounts has connected to the bank (and triggered the push notification)
+        before the user sees the "Confirm in banking app" screen.
+        """
+        t0 = time.monotonic()
+        deadline = t0 + timeout
+        logger.info("getaccounts PTY drain started")
+        stop_reason = "timeout"
+        while time.monotonic() < deadline:
+            if self.proc.poll() is not None:
+                stop_reason = "process_exited"
+                break
+
+            remaining = deadline - time.monotonic()
+            rlist, _, _ = select.select([self._acc_master_fd], [], [], min(0.5, remaining))
+            if not rlist:
+                continue
+            try:
+                chunk = os.read(self._acc_master_fd, 4096)
+                self._acc_output += chunk
+            except OSError:
+                stop_reason = "pty_eof"
+                break
+
+            if b"Please enter your choice:" in self._acc_output:
+                if b"Possible Stale Lock" in self._acc_output:
+                    logger.warning("Stale AqBanking lock detected (drain) — removing automatically")
+                    try:
+                        os.write(self._acc_master_fd, b"2\n")
+                    except OSError:
+                        pass
+                    self._acc_output = b""
+                    deadline = time.monotonic() + 10
+                    continue
+                stop_reason = "interactive_prompt"
+                break
+
+            if b"Input:" in self._acc_output:
+                stop_reason = "tan_input_prompt"
+                break
+        logger.info("getaccounts PTY drain finished after %.1fs, reason=%s",
+                    time.monotonic() - t0, stop_reason)
 
     def _drain_acc_pty(self):
         """Read all immediately available data from the getaccounts PTY master fd."""
@@ -509,15 +635,81 @@ class SetupSession:
 
     def _finalize_setup(self) -> dict:
         self._run_getaccsepa()
-        accounts = self._listaccounts()
+        all_bank_accounts = self._listaccounts_for_user()
+        accounts = self._filter_unconfigured(all_bank_accounts)
+
+        if not accounts:
+            # All accounts for this bank are already configured.
+            self._remove_placeholder()
+            return {
+                "status": "all_configured",
+                "message": "All accounts for this bank are already configured in banks.json.",
+                "configured_count": len(all_bank_accounts),
+            }
+
         aqbanking_id = self._find_aqbanking_id(accounts)
-        iban = self._find_iban(accounts)
-        self._write_back(aqbanking_id, iban)
+        if aqbanking_id is None:
+            # Heuristic could not identify the right account — let the user pick.
+            self._pending_accounts = accounts
+            return {
+                "setup_id": self.setup_id,
+                "status": "pending_account_select",
+                "accounts": accounts,
+            }
+
+        selected = self._find_account(accounts)
+        iban = selected.get("iban") if selected else None
+        account_number = selected.get("account_number") if selected else None
+        bank_code = selected.get("bank_code") if selected else None
+        account_type_label = selected.get("account_type_label") if selected else None
+        self._write_back(aqbanking_id, iban, account_number, bank_code, account_type_label)
         return {
             "status": "ok",
             "account_id": self.account_id,
             "aqbanking_id": aqbanking_id,
             "iban": iban,
+            "account_number": account_number,
+            "bank_code": bank_code,
+            "accounts": accounts,
+        }
+
+    def _check_duplicate(self, account_number: Optional[str], bank_code: Optional[str]) -> Optional[str]:
+        """Return the existing account id if this account_number+bank_code is already configured."""
+        if not account_number or not bank_code:
+            return None
+        cfg = load_config()
+        for a in cfg["accounts"]:
+            if (a.get("account_number") == account_number
+                    and a.get("bank_code_aq") == bank_code
+                    and a.get("id") != self.account_id):
+                return a["id"]
+        return None
+
+    def _remove_placeholder(self):
+        """Remove the incomplete placeholder entry added at POST /setup time."""
+        cfg = load_config()
+        cfg["accounts"] = [a for a in cfg["accounts"] if a["id"] != self.account_id]
+        save_config(cfg)
+
+    def select_account(self, aqbanking_id: int) -> dict:
+        """Finalise setup with an explicitly chosen aqbanking_id."""
+        accounts = self._pending_accounts or self._filter_unconfigured(self._listaccounts_for_user())
+        selected = next((a for a in accounts if a.get("aqbanking_id") == aqbanking_id), None)
+        if selected is None:
+            raise ValueError(f"No account with aqbanking_id {aqbanking_id} found")
+        iban = selected.get("iban")
+        account_number = selected.get("account_number")
+        bank_code = selected.get("bank_code")
+        account_type_label = selected.get("account_type_label")
+        self._write_back(aqbanking_id, iban, account_number, bank_code, account_type_label)
+        return {
+            "status": "ok",
+            "account_id": self.account_id,
+            "aqbanking_id": aqbanking_id,
+            "iban": iban,
+            "account_number": account_number,
+            "bank_code": bank_code,
+            "account_type_label": account_type_label,
             "accounts": accounts,
         }
 
@@ -531,6 +723,60 @@ class SetupSession:
         result = subprocess.run(["aqhbci-tool4", "listaccounts", "-v"], capture_output=True, text=True)
         return _parse_listaccounts(result.stdout)
 
+    def _listaccounts_for_user(self) -> list:
+        """List accounts relevant to this setup session.
+
+        Priority:
+        1. Snapshot diff — accounts whose aqbanking_id did not exist before setup.
+           Catches all accounts registered during getaccounts (even if AqBanking
+           assigned them to different internal user entries).
+        2. BLZ filter — all AqBanking accounts whose bank_code matches self.blz.
+           Used on retries where the snapshot diff is empty because AqBanking reused
+           existing IDs.  Returns ALL accounts for this bank (including already-
+           configured ones); _filter_unconfigured handles exclusion later.
+        3. -u user_index — last resort for banks whose sub-accounts use a different BLZ.
+        """
+        all_accounts = self._listaccounts()
+
+        new_accounts = [
+            a for a in all_accounts
+            if a.get("aqbanking_id") not in self._pre_existing_ids
+        ]
+        if new_accounts:
+            logger.info("_listaccounts_for_user: %d new account(s) via snapshot diff",
+                        len(new_accounts))
+            return new_accounts
+
+        by_blz = [a for a in all_accounts if a.get("bank_code") == self.blz]
+        if by_blz:
+            logger.info("_listaccounts_for_user: snapshot empty, returning %d account(s) by BLZ %s",
+                        len(by_blz), self.blz)
+            return by_blz
+
+        logger.info("_listaccounts_for_user: falling back to -u %s", self.user_index)
+        cmd = ["aqhbci-tool4", "listaccounts", "-v", "-u", self.user_index]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        accounts = _parse_listaccounts(result.stdout)
+        return accounts if accounts else all_accounts
+
+    def _filter_unconfigured(self, accounts: list) -> list:
+        """Remove accounts already present in banks.json (by account_number + bank_code).
+
+        The current setup placeholder (self.account_id) is excluded from the 'existing'
+        check so that it is not accidentally treated as a pre-existing duplicate.
+        """
+        cfg = load_config()
+        existing_keys = {
+            (a.get("account_number"), a.get("bank_code_aq"))
+            for a in cfg["accounts"]
+            if a.get("account_number") and a.get("bank_code_aq")
+            and a.get("id") != self.account_id
+        }
+        return [
+            a for a in accounts
+            if (a.get("account_number"), a.get("bank_code")) not in existing_keys
+        ]
+
     def _find_account(self, accounts: list) -> Optional[dict]:
         """Find the most relevant account from listaccounts output.
 
@@ -540,8 +786,6 @@ class SetupSession:
         different BLZ than the one used for setup (Consorsbank: setup BLZ
         76030080, Verrechnungskonto BLZ 70120400 / HypoVereinsbank).
 
-        TODO: remove once issue #17 (UI) lets users select the account
-        explicitly during setup.
         """
         for acc in accounts:
             number = acc.get("account_number", "")
@@ -560,8 +804,10 @@ class SetupSession:
         acc = self._find_account(accounts)
         return acc.get("iban") if acc else None
 
-    def _write_back(self, aqbanking_id: Optional[int], iban: Optional[str]):
-        """Write aqbanking_id (and iban if found) back into banks.json."""
+    def _write_back(self, aqbanking_id: Optional[int], iban: Optional[str],
+                    account_number: Optional[str] = None, bank_code: Optional[str] = None,
+                    account_type_label: Optional[str] = None):
+        """Write aqbanking_id and resolved account fields back into banks.json."""
         if aqbanking_id is None:
             logger.warning("Could not determine aqbanking_id for account %s", self.account_id)
         config = load_config()
@@ -571,5 +817,11 @@ class SetupSession:
                     acc["aqbanking_id"] = aqbanking_id
                 if iban:
                     acc["iban"] = iban
+                if account_number:
+                    acc["account_number"] = account_number
+                if bank_code:
+                    acc["bank_code_aq"] = bank_code
+                if account_type_label:
+                    acc["account_type_label"] = account_type_label
                 break
         save_config(config)
