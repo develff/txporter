@@ -72,18 +72,32 @@ def list_accounts():
     ])
 
 
-@app.route("/accounts/<int:aqbanking_id>", methods=["DELETE"])
-def delete_account(aqbanking_id):
-    """Remove an account registration by aqbanking_id."""
+@app.route("/accounts/<account_ref>", methods=["DELETE"])
+def delete_account(account_ref):
+    """Remove an account by aqbanking_id (integer) or account id (string).
+
+    Useful for removing incomplete registrations that have no aqbanking_id yet.
+    """
     cfg = bank_setup.load_config()
     before = len(cfg["accounts"])
-    cfg["accounts"] = [a for a in cfg["accounts"] if a.get("aqbanking_id") != aqbanking_id]
+
+    # Try numeric aqbanking_id first, fall back to string account id
+    try:
+        numeric_id = int(account_ref)
+        cfg["accounts"] = [a for a in cfg["accounts"] if a.get("aqbanking_id") != numeric_id]
+    except ValueError:
+        numeric_id = None
+
     if len(cfg["accounts"]) == before:
-        return jsonify({"error": f"No account with aqbanking_id {aqbanking_id}"}), 404
+        # Either not an int, or no match by aqbanking_id — try string id
+        cfg["accounts"] = [a for a in cfg["accounts"] if a.get("id") != account_ref]
+
+    if len(cfg["accounts"]) == before:
+        return jsonify({"error": f"No account found for '{account_ref}'"}), 404
+
     bank_setup.save_config(cfg)
-    # Refresh in-memory config
     config["accounts"] = cfg["accounts"]
-    return jsonify({"status": "ok", "deleted_aqbanking_id": aqbanking_id})
+    return jsonify({"status": "ok", "deleted": account_ref})
 
 
 @app.route("/setup/profiles", methods=["GET"])
@@ -105,7 +119,7 @@ def setup_start():
 
     Profile fields can be overridden per-request.
     """
-    body = request.get_json(force=True) or {}
+    body = request.get_json(force=True, silent=True) or {}
 
     pin = body.get("pin")
     login = body.get("login")
@@ -182,6 +196,32 @@ def setup_start():
     return jsonify(result), 202
 
 
+@app.route("/setup/<setup_id>/acceptcert", methods=["POST"])
+def setup_acceptcert(setup_id):
+    """Step 1b: accept or reject the bank's certificate presented during getsysid.
+
+    Body: { "accept": true }
+    """
+    if setup_id not in _pending_setups:
+        return jsonify({"error": f"No pending setup for id '{setup_id}'"}), 404
+
+    body = request.get_json(force=True, silent=True) or {}
+    accept = body.get("accept")
+    if accept is None:
+        return jsonify({"error": "Field 'accept' (true/false) is required"}), 400
+
+    session = _pending_setups[setup_id]
+    try:
+        result = session.step1b_accept_cert(bool(accept))
+    except Exception as e:
+        logger.error("Certificate acceptance failed for %s: %s", setup_id, e)
+        if not accept:
+            _pending_setups.pop(setup_id, None)
+        return jsonify({"error": str(e)}), 500
+
+    return jsonify(result), 202
+
+
 @app.route("/setup/<setup_id>/tanmode", methods=["POST"])
 def setup_tanmode(setup_id):
     """Step 2: set TAN mode (only needed if not auto-selected in step 1).
@@ -191,7 +231,7 @@ def setup_tanmode(setup_id):
     if setup_id not in _pending_setups:
         return jsonify({"error": f"No pending setup for id '{setup_id}'"}), 404
 
-    body = request.get_json(force=True) or {}
+    body = request.get_json(force=True, silent=True) or {}
     tan_mode = body.get("tan_mode")
     if tan_mode is None:
         return jsonify({"error": "Field 'tan_mode' is required"}), 400
@@ -204,6 +244,32 @@ def setup_tanmode(setup_id):
         return jsonify({"error": str(e)}), 500
 
     return jsonify(result), 202
+
+
+@app.route("/setup/<setup_id>/tan", methods=["POST"])
+def setup_submit_tan(setup_id):
+    """Step 3b: submit TAN for banks that require explicit TAN entry (e.g. Consorsbank).
+
+    Only needed when /confirm returns status 'pending_tan'.
+    Body: { "tan": "123456" }
+    """
+    if setup_id not in _pending_setups:
+        return jsonify({"error": f"No pending setup for id '{setup_id}'"}), 404
+
+    body = request.get_json(force=True, silent=True) or {}
+    tan = body.get("tan")
+    if not tan:
+        return jsonify({"error": "Field 'tan' is required"}), 400
+
+    session = _pending_setups.pop(setup_id)
+    try:
+        result = session.step3b_submit_tan(str(tan))
+    except Exception as e:
+        _pending_setups[setup_id] = session  # put back so caller can retry
+        logger.error("TAN submission failed for %s: %s", setup_id, e)
+        return jsonify({"error": str(e)}), 500
+
+    return jsonify(result)
 
 
 @app.route("/setup/<setup_id>/confirm", methods=["POST"])
@@ -219,6 +285,10 @@ def setup_confirm(setup_id):
         _pending_setups[setup_id] = session  # put back so caller can retry
         logger.error("Setup step 3 failed for %s: %s", setup_id, e)
         return jsonify({"error": str(e)}), 500
+
+    if result.get("status") == "pending_tan":
+        _pending_setups[setup_id] = session  # keep alive for /tan submission
+        return jsonify(result), 202
 
     return jsonify(result)
 

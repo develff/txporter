@@ -10,5 +10,11 @@
     "url": "https://fints.1822direkt.com/fints/hbci",
     "hbci_version": 300,
     "tan_mode": 6903
+  },
+  "consorsbank": {
+    "blz": "76030080",
+    "url": "https://brokerage-hbci.consorsbank.de/hbci",
+    "hbci_version": 300,
+    "tan_mode": 6900
   }
 }

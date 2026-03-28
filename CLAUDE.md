@@ -58,7 +58,7 @@ PayPal          ────► │                ──► CSV File
 |------|-----|-----|----------|
 | DKB | 12030000 | https://fints.dkb.de/fints | 7940 (DKB App) |
 | 1822direkt | 50050222 | https://fints.1822direkt.com/fints/hbci | 6903 (1822TAN+, HKTAN V6/PSD2, read-only since 2025-09-16) |
-| Consorsbank | 76030080 | https://fin.consorsbank.de/auth | pushTAN (URL unverified — not in bank_profiles.json yet) |
+| Consorsbank | 76030080 | https://brokerage-hbci.consorsbank.de/hbci | pushTAN. Login = Kontonummer + 3-stellige Ber.-Nr., z.B. 900123456001 |
 
 ## AqBanking setup flow (automated via REST API)
 

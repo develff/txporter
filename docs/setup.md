@@ -57,7 +57,7 @@ shell access is required.
 curl http://localhost:8090/setup/profiles
 ```
 
-Currently defined profiles: **dkb**, **1822direkt**.
+Currently defined profiles: **dkb**, **1822direkt**, **consorsbank**.
 Unknown banks can be registered manually by supplying all fields (see below).
 
 #### Step 1 — Register bank
@@ -97,7 +97,8 @@ Profile fields (`blz`, `url`, `hbci_version`, `tan_mode`) can be overridden per-
 }
 ```
 
-Confirm the TAN in your banking app, then proceed to Step 3.
+For **pushTAN banks** (e.g. DKB): confirm the TAN in your banking app, then proceed to Step 3.
+For **photoTAN/chipTAN banks** (e.g. Consorsbank): a TAN challenge will be presented in Step 3 — proceed there first.
 
 **Response (no TAN mode known — manual selection required):**
 ```json
@@ -128,7 +129,7 @@ Confirm it, then proceed to Step 3.
 curl -X POST http://localhost:8090/setup/{setup_id}/confirm
 ```
 
-**Response:**
+**Response (pushTAN — e.g. DKB, 1822direkt):**
 ```json
 {
   "status": "ok",
@@ -139,8 +140,40 @@ curl -X POST http://localhost:8090/setup/{setup_id}/confirm
 }
 ```
 
-The account is now fully registered. `aqbanking_id` and `iban` are written back to
-`config/banks.json` automatically.
+**Response (photoTAN/chipTAN — e.g. Consorsbank):**
+```json
+{
+  "status": "pending_tan",
+  "setup_id": "uuid-...",
+  "challenge": "Bitte TAN eingeben.",
+  "message": "Enter TAN from your banking app, then POST /setup/{id}/tan"
+}
+```
+
+For `pending_tan`: open your banking app, scan the QR code / generate a TAN from the
+challenge, then proceed to Step 3b.
+
+#### Step 3b — Submit TAN (only for photoTAN/chipTAN banks)
+
+```bash
+curl -X POST http://localhost:8090/setup/{setup_id}/tan \
+  -H "Content-Type: application/json" \
+  -d '{"tan": "123456"}'
+```
+
+**Response:**
+```json
+{
+  "status": "ok",
+  "account_id": "consorsbank",
+  "aqbanking_id": 10,
+  "iban": null,
+  "accounts": [...]
+}
+```
+
+The account is now fully registered. `aqbanking_id` (and `iban` if available) are written
+back to `config/banks.json` automatically.
 
 ### 4. Verify
 

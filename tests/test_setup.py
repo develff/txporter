@@ -3,6 +3,7 @@
 import json
 import os
 import pytest
+import subprocess
 import tempfile
 from unittest.mock import patch, MagicMock, call
 
@@ -93,15 +94,16 @@ class TestParseTanModes:
 # ── _parse_listaccounts ────────────────────────────────────────────────────────
 
 class TestParseListaccounts:
+    # AqBanking 6.9.x single-line format
     SAMPLE = (
-        "Account 0 (Unique Account Id=1):\n"
-        "  Bank Code         : 12030000\n"
-        "  IBAN              : DE12300120001234567890\n"
-        "  Account Number    : 1234567890\n"
-        "Account 1 (Unique Account Id=2):\n"
-        "  Bank Code         : 50050222\n"
-        "  IBAN              : DE98500502221234567890\n"
-        "  Account Number    : 9876543210\n"
+        "Account 0: Bank: 12030000 Account Number: 1234567890"
+        "  SubAccountId: abc  Account Type: bank LocalUniqueId: 1\n"
+        "Account 1: Bank: 50050222 Account Number: 9876543210"
+        "  SubAccountId: EUR  Account Type: bank LocalUniqueId: 2\n"
+    )
+    SAMPLE_WITH_IBAN = (
+        "Account 0: Bank: 12030000 Account Number: 1234567890"
+        "  IBAN: DE12300120001234567890  LocalUniqueId: 1\n"
     )
 
     def test_returns_two_accounts(self):
@@ -114,8 +116,12 @@ class TestParseListaccounts:
         assert accounts[1]["aqbanking_id"] == 2
 
     def test_iban_parsed(self):
-        accounts = _parse_listaccounts(self.SAMPLE)
+        accounts = _parse_listaccounts(self.SAMPLE_WITH_IBAN)
         assert accounts[0]["iban"] == "DE12300120001234567890"
+
+    def test_iban_none_when_absent(self):
+        accounts = _parse_listaccounts(self.SAMPLE)
+        assert accounts[0]["iban"] is None
 
     def test_bank_code_parsed(self):
         accounts = _parse_listaccounts(self.SAMPLE)
@@ -148,30 +154,83 @@ def _ok_run(returncode=0, stdout="", stderr=""):
     return r
 
 
+def _make_session_with_cert_proc(tan_mode=7940, returncode=0, already_exited=True):
+    """Helper: session with cert_proc already completed (simulates pre-trusted cert)."""
+    session = _make_session(tan_mode=tan_mode)
+    session.user_index = "1"
+    mock_proc = MagicMock()
+    mock_proc.poll.return_value = returncode if already_exited else None
+    mock_proc.returncode = returncode
+    session.cert_proc = mock_proc
+    session._cert_master_fd = 99  # dummy fd
+    session._cert_output = b""
+    return session
+
+
+def _patch_pty_getsysid(cert_output=b"", proc_poll_returns=None):
+    """Context manager: mock pty.openpty + Popen for getsysid tests."""
+    mock_proc = MagicMock()
+    # poll() returns None (running) until we've read enough, then 0 (done)
+    if proc_poll_returns is None:
+        proc_poll_returns = [None, None, None, 0]
+    mock_proc.poll.side_effect = proc_poll_returns + [0] * 10
+    mock_proc.returncode = 0
+    mock_proc.wait.return_value = 0
+
+    import contextlib
+    @contextlib.contextmanager
+    def ctx():
+        with patch("src.setup.pty.openpty", return_value=(99, 100)), \
+             patch("src.setup.subprocess.Popen", return_value=mock_proc), \
+             patch("src.setup.os.close"), \
+             patch("src.setup.os.read", return_value=cert_output), \
+             patch("src.setup.os.write"), \
+             patch("src.setup.select.select", return_value=([99], [], [])):
+            yield mock_proc
+    return ctx()
+
+
+CERT_PROMPT_OUTPUT = (
+    b"===== Certificate Received =====\r\n"
+    b"Name         : brokerage-hbci.consorsbank.de\r\n"
+    b"Organisation : BNP PARIBAS SA\r\n"
+    b"Country      : FR\r\n"
+    b"Valid after  : 2025/04/15 00:00:00\r\n"
+    b"Valid until  : 2026/04/14 23:59:59\r\n"
+    b"Hash (SHA1)  : 98:48:F9:9B:82:8C:BE:00\r\n"
+    b"Status       : The certificate is valid\r\n"
+    b"Do you wish to accept this certificate?\r\n"
+    b"(1) Yes  (2) No\r\n"
+    b"Please enter your choice: "
+)
+
+
 class TestSetupSessionStep1:
-    def test_returns_pending_confirm_when_tan_mode_known(self):
+    def test_returns_pending_cert_with_certificate_details(self):
         session = _make_session(tan_mode=7940)
-        session.user_index = "1"
         with patch("src.setup.subprocess.run", return_value=_ok_run()), \
              patch("src.setup._resolve_user_index", return_value="1"), \
-             patch("src.setup.subprocess.Popen") as mock_popen:
+             _patch_pty_getsysid(cert_output=CERT_PROMPT_OUTPUT):
             result = session.step1_register()
-        assert result["status"] == "pending_confirm"
-        assert result["auto_selected_tan_mode"] == 7940
-        mock_popen.assert_called_once()
+        assert result["status"] == "pending_cert"
+        assert "acceptcert" in result["message"]
+        assert result["certificate"]["name"] == "brokerage-hbci.consorsbank.de"
+        assert result["certificate"]["organisation"] == "BNP PARIBAS SA"
 
-    def test_returns_pending_tan_mode_when_tan_mode_unknown(self):
-        session = _make_session(tan_mode=None)
+    def test_skips_cert_step_when_already_trusted(self):
+        """If cert is pre-trusted, getsysid exits without prompting → skip to listitanmodes."""
+        session = _make_session(tan_mode=7940)
         tan_output = "  7940 : DKB App\n"
         with patch("src.setup.subprocess.run", side_effect=[
-            _ok_run(),                       # adduser
-            _ok_run(),                       # getsysid
-            _ok_run(stdout=tan_output),      # listitanmodes
-        ]), patch("src.setup._resolve_user_index", return_value="1"):
+            _ok_run(),                          # listusers (in _delete_existing_users)
+            _ok_run(),                          # adduser
+            _ok_run(stdout=tan_output),         # listitanmodes
+            _ok_run(),                          # setitanmode
+        ]), patch("src.setup._resolve_user_index", return_value="1"), \
+           _patch_pty_getsysid(cert_output=b"", proc_poll_returns=[0]):
+            # _patch_pty_getsysid's Popen mock handles both getsysid and getaccounts
             result = session.step1_register()
-        assert result["status"] == "pending_tan_mode"
-        assert result["tan_modes"] == [{"id": 7940, "description": "DKB App"}]
-        assert "auto_selected_tan_mode" not in result
+        assert result["status"] == "pending_confirm"
 
     def test_raises_on_adduser_failure(self):
         session = _make_session()
@@ -180,26 +239,52 @@ class TestSetupSessionStep1:
             with pytest.raises(RuntimeError, match="adduser failed"):
                 session.step1_register()
 
+
+class TestSetupSessionStep1b:
+    def test_returns_pending_confirm_when_tan_mode_known(self):
+        session = _make_session_with_cert_proc(tan_mode=7940)
+        tan_output = "  7940 : DKB App\n"
+        with patch("src.setup.subprocess.run", return_value=_ok_run(stdout=tan_output)), \
+             patch("src.setup.subprocess.Popen"), \
+             patch("src.setup.os.close"), \
+             patch("src.setup.select.select", return_value=([], [], [])):
+            result = session.step1b_accept_cert(True)
+        assert result["status"] == "pending_confirm"
+        assert result["auto_selected_tan_mode"] == 7940
+
+    def test_returns_pending_tan_mode_when_tan_mode_unknown(self):
+        session = _make_session_with_cert_proc(tan_mode=None)
+        tan_output = "  7940 : DKB App\n"
+        with patch("src.setup.subprocess.run", return_value=_ok_run(stdout=tan_output)), \
+             patch("src.setup.os.close"), \
+             patch("src.setup.select.select", return_value=([], [], [])):
+            result = session.step1b_accept_cert(True)
+        assert result["status"] == "pending_tan_mode"
+        assert result["tan_modes"] == [{"id": 7940, "description": "DKB App"}]
+
+    def test_raises_on_reject(self):
+        session = _make_session_with_cert_proc()
+        with patch("src.setup.os.close"), \
+             patch("src.setup.select.select", return_value=([], [], [])):
+            with pytest.raises(RuntimeError, match="rejected"):
+                session.step1b_accept_cert(False)
+
     def test_raises_on_getsysid_failure(self):
-        session = _make_session()
-        with patch("src.setup.subprocess.run", side_effect=[
-            _ok_run(),                              # adduser ok
-            _ok_run(returncode=1, stderr="fail"),   # getsysid fails
-        ]), patch("src.setup._resolve_user_index", return_value="1"):
+        session = _make_session_with_cert_proc(returncode=1)
+        with patch("src.setup.os.close"), \
+             patch("src.setup.select.select", return_value=([], [], [])):
             with pytest.raises(RuntimeError, match="getsysid failed"):
-                session.step1_register()
+                session.step1b_accept_cert(True)
 
 
 class TestSetupSessionStep2:
-    def test_sets_tan_mode_and_starts_getaccounts(self):
+    def test_sets_tan_mode_returns_pending_confirm(self):
         session = _make_session(tan_mode=None)
         session.user_index = "1"
-        with patch("src.setup.subprocess.run", return_value=_ok_run()), \
-             patch("src.setup.subprocess.Popen") as mock_popen:
+        with patch("src.setup.subprocess.run", return_value=_ok_run()):
             result = session.step2_set_tanmode(6903)
         assert result["status"] == "pending_confirm"
         assert session.tan_mode == 6903
-        mock_popen.assert_called_once()
 
     def test_raises_on_setitanmode_failure(self):
         session = _make_session(tan_mode=None)
@@ -209,11 +294,44 @@ class TestSetupSessionStep2:
                 session.step2_set_tanmode(6903)
 
 
+TAN_PROMPT_OUTPUT = (
+    b"===== TAN Entry =====\r\n"
+    b"Please enter the TAN for user 7163657005001 at BNP Paribas.\r\n"
+    b"The server provided the following challenge:\r\n"
+    b"Bitte TAN eingeben.\r\n"
+    b"Input: "
+)
+
+
+import contextlib
+
+def _patch_pty_getaccounts(acc_output=b"", proc_poll_returns=None, proc_returncode=0):
+    """Context manager: mock pty.openpty + Popen for getaccounts PTY tests."""
+    mock_proc = MagicMock()
+    if proc_poll_returns is None:
+        proc_poll_returns = [proc_returncode]
+    mock_proc.poll.side_effect = proc_poll_returns + [proc_returncode] * 10
+    mock_proc.returncode = proc_returncode
+    mock_proc.wait.return_value = proc_returncode
+
+    select_result = ([98], [], []) if acc_output else ([], [], [])
+
+    @contextlib.contextmanager
+    def ctx():
+        with patch("src.setup.pty.openpty", return_value=(98, 99)), \
+             patch("src.setup.subprocess.Popen", return_value=mock_proc), \
+             patch("src.setup.os.close"), \
+             patch("src.setup.os.read", return_value=acc_output), \
+             patch("src.setup.os.write"), \
+             patch("src.setup.select.select", return_value=select_result):
+            yield mock_proc
+    return ctx()
+
+
 class TestSetupSessionStep3:
     LISTACCOUNTS_OUTPUT = (
-        "Account 0 (Unique Account Id=1):\n"
-        "  Bank Code         : 12030000\n"
-        "  IBAN              : DE12300120001234567890\n"
+        "Account 0: Bank: 12030000 Account Number: 1234567890"
+        "  SubAccountId: abc  Account Type: bank LocalUniqueId: 1\n"
     )
 
     def test_returns_ok_with_aqbanking_id(self, tmp_path):
@@ -228,34 +346,94 @@ class TestSetupSessionStep3:
 
         session = _make_session()
         session.user_index = "1"
-        mock_proc = MagicMock()
-        mock_proc.communicate.return_value = ("", "")
-        mock_proc.returncode = 0
-        session.proc = mock_proc
 
         with patch("src.setup.CONFIG_PATH", config_path), \
              patch("src.setup.subprocess.run", side_effect=[
                  _ok_run(),                                  # getaccsepa
                  _ok_run(stdout=self.LISTACCOUNTS_OUTPUT),   # listaccounts
-             ]):
+             ]), \
+             _patch_pty_getaccounts(acc_output=b"", proc_returncode=0):
             result = session.step3_confirm()
 
         assert result["status"] == "ok"
         assert result["aqbanking_id"] == 1
-        assert result["iban"] == "DE12300120001234567890"
         saved = json.loads(open(config_path).read())
         assert saved["accounts"][0]["aqbanking_id"] == 1
-        assert saved["accounts"][0]["iban"] == "DE12300120001234567890"
+
+    def test_returns_pending_tan_when_challenge_detected(self):
+        session = _make_session()
+        session.user_index = "1"
+        with _patch_pty_getaccounts(acc_output=TAN_PROMPT_OUTPUT, proc_poll_returns=[None] * 5):
+            result = session.step3_confirm()
+
+        assert result["status"] == "pending_tan"
+        assert "challenge" in result
+        assert "Bitte TAN eingeben" in result["challenge"]
+        assert "/tan" in result["message"]
 
     def test_raises_on_getaccounts_failure(self):
         session = _make_session()
         session.user_index = "1"
+        with _patch_pty_getaccounts(acc_output=b"", proc_returncode=1):
+            with pytest.raises(RuntimeError, match="getaccounts failed"):
+                session.step3_confirm()
+
+
+class TestSetupSessionStep3b:
+    LISTACCOUNTS_OUTPUT = (
+        "Account 0: Bank: 76030080 Account Number: 7163657005"
+        "  SubAccountId: EUR  Account Type: bank LocalUniqueId: 1\n"
+    )
+
+    def _make_consors_session_with_tan_prompt(self):
+        """Session with getaccounts PTY already at TAN prompt (proc still running)."""
+        session = SetupSession(
+            setup_id="test-uuid", account_id="consorsbank", login="7163657005001",
+            blz="76030080", url="https://brokerage-hbci.consorsbank.de/hbci",
+            hbci_version=300, tan_mode=6900, name="Consorsbank",
+        )
+        session.user_index = "1"
         mock_proc = MagicMock()
-        mock_proc.communicate.return_value = ("", "error!")
-        mock_proc.returncode = 1
+        mock_proc.poll.side_effect = [0] + [0] * 10
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = 0
         session.proc = mock_proc
-        with pytest.raises(RuntimeError, match="getaccounts failed"):
-            session.step3_confirm()
+        session._acc_master_fd = 98
+        session._acc_output = TAN_PROMPT_OUTPUT
+        return session
+
+    def test_returns_ok_after_tan_entry(self, tmp_path):
+        config = {
+            "accounts": [{"id": "consorsbank", "name": "Consorsbank", "type": "fints",
+                          "blz": "76030080", "url": "u", "login": "l", "hbci_version": 300}],
+            "targets": {},
+        }
+        config_path = str(tmp_path / "banks.json")
+        with open(config_path, "w") as f:
+            json.dump(config, f)
+        session = self._make_consors_session_with_tan_prompt()
+        with patch("src.setup.CONFIG_PATH", config_path), \
+             patch("src.setup.os.write"), \
+             patch("src.setup.os.close"), \
+             patch("src.setup.select.select", return_value=([], [], [])), \
+             patch("src.setup.subprocess.run", side_effect=[
+                 _ok_run(),                                   # getaccsepa
+                 _ok_run(stdout=self.LISTACCOUNTS_OUTPUT),    # listaccounts
+             ]):
+            result = session.step3b_submit_tan("123456")
+
+        assert result["status"] == "ok"
+        assert result["aqbanking_id"] == 1
+
+    def test_raises_on_timeout(self):
+        session = self._make_consors_session_with_tan_prompt()
+        session.proc.poll.side_effect = [None] * 20
+        session.proc.wait.side_effect = subprocess.TimeoutExpired("cmd", 5)
+        with patch("src.setup.os.write"), \
+             patch("src.setup.os.close"), \
+             patch("src.setup.select.select", return_value=([], [], [])):
+            with pytest.raises(RuntimeError, match="timed out"):
+                session.step3b_submit_tan("123456", timeout=0)
 
 
 # ── Server endpoints ───────────────────────────────────────────────────────────
@@ -335,13 +513,13 @@ class TestSetupStartEndpoint:
         assert resp.status_code == 400
 
     def test_successful_setup_with_profile(self, client):
-        step1_result = {"setup_id": "uuid-1", "status": "pending_confirm",
-                        "message": "Confirm TAN...", "tan_modes": [], "auto_selected_tan_mode": 7940}
+        step1_result = {"setup_id": "uuid-1", "status": "pending_cert",
+                        "message": "Accept cert via POST /setup/uuid-1/acceptcert"}
         with self._mock_step1(step1_result), \
              patch("src.server.bank_setup._write_pin"):
             resp = client.post("/setup", json={"bank": "dkb", "login": "12345678", "pin": "1234"})
         assert resp.status_code == 202
-        assert resp.get_json()["status"] == "pending_confirm"
+        assert resp.get_json()["status"] == "pending_cert"
 
     def test_account_written_to_config(self, client, tmp_path):
         import src.server as server_mod
@@ -399,6 +577,42 @@ class TestSetupStartEndpoint:
         assert session.tan_mode == 9999
 
 
+class TestAcceptcertEndpoint:
+    def test_unknown_setup_id_returns_404(self, client):
+        resp = client.post("/setup/nonexistent/acceptcert", json={"accept": True})
+        assert resp.status_code == 404
+
+    def test_missing_accept_field_returns_400(self, client):
+        import src.server as server_mod
+        session = _make_session()
+        session.user_index = "1"
+        server_mod._pending_setups["s1"] = session
+        resp = client.post("/setup/s1/acceptcert", json={})
+        assert resp.status_code == 400
+
+    def test_accept_true_returns_202(self, client):
+        import src.server as server_mod
+        session = _make_session()
+        session.user_index = "1"
+        server_mod._pending_setups["s1"] = session
+        result = {"setup_id": "s1", "status": "pending_confirm", "message": "Confirm TAN..."}
+        with patch("src.server.bank_setup.SetupSession.step1b_accept_cert", return_value=result):
+            resp = client.post("/setup/s1/acceptcert", json={"accept": True})
+        assert resp.status_code == 202
+        assert resp.get_json()["status"] == "pending_confirm"
+
+    def test_reject_removes_session(self, client):
+        import src.server as server_mod
+        session = _make_session()
+        session.user_index = "1"
+        server_mod._pending_setups["s1"] = session
+        with patch("src.server.bank_setup.SetupSession.step1b_accept_cert",
+                   side_effect=RuntimeError("Certificate rejected by user")):
+            resp = client.post("/setup/s1/acceptcert", json={"accept": False})
+        assert resp.status_code == 500
+        assert "s1" not in server_mod._pending_setups
+
+
 class TestSetupTanmodeEndpoint:
     def test_unknown_setup_id_returns_404(self, client):
         resp = client.post("/setup/nonexistent/tanmode", json={"tan_mode": 7940})
@@ -452,6 +666,57 @@ class TestSetupConfirmEndpoint:
         assert resp.status_code == 500
         assert "s1" in server_mod._pending_setups
 
+    def test_pending_tan_keeps_session_alive(self, client):
+        import src.server as server_mod
+        session = _make_session()
+        session.user_index = "1"
+        server_mod._pending_setups["s1"] = session
+        step3_result = {"status": "pending_tan", "setup_id": "s1",
+                        "challenge": "Bitte TAN eingeben.", "message": "Enter TAN..."}
+        with patch("src.server.bank_setup.SetupSession.step3_confirm", return_value=step3_result):
+            resp = client.post("/setup/s1/confirm")
+        assert resp.status_code == 202
+        assert resp.get_json()["status"] == "pending_tan"
+        assert "s1" in server_mod._pending_setups
+
+
+class TestSetupTanEndpoint:
+    def test_unknown_setup_id_returns_404(self, client):
+        resp = client.post("/setup/nonexistent/tan", json={"tan": "123456"})
+        assert resp.status_code == 404
+
+    def test_missing_tan_returns_400(self, client):
+        import src.server as server_mod
+        session = _make_session()
+        session.user_index = "1"
+        server_mod._pending_setups["s1"] = session
+        resp = client.post("/setup/s1/tan", json={})
+        assert resp.status_code == 400
+
+    def test_successful_tan_returns_ok(self, client):
+        import src.server as server_mod
+        session = _make_session()
+        session.user_index = "1"
+        server_mod._pending_setups["s1"] = session
+        step3b_result = {"status": "ok", "account_id": "dkb", "aqbanking_id": 1,
+                         "iban": "DE12300120001234567890", "accounts": []}
+        with patch("src.server.bank_setup.SetupSession.step3b_submit_tan", return_value=step3b_result):
+            resp = client.post("/setup/s1/tan", json={"tan": "123456"})
+        assert resp.status_code == 200
+        assert resp.get_json()["status"] == "ok"
+        assert "s1" not in server_mod._pending_setups
+
+    def test_tan_failure_restores_session(self, client):
+        import src.server as server_mod
+        session = _make_session()
+        session.user_index = "1"
+        server_mod._pending_setups["s1"] = session
+        with patch("src.server.bank_setup.SetupSession.step3b_submit_tan",
+                   side_effect=RuntimeError("wrong TAN")):
+            resp = client.post("/setup/s1/tan", json={"tan": "000000"})
+        assert resp.status_code == 500
+        assert "s1" in server_mod._pending_setups
+
 
 class TestAccountsEndpoint:
     def test_lists_accounts_with_aqbanking_id(self, client, tmp_path):
@@ -491,23 +756,38 @@ class TestAccountsEndpoint:
 
 
 class TestDeleteAccountEndpoint:
-    def test_deletes_existing_account(self, client, tmp_path):
+    def _write_config(self, setup_mod, accounts):
+        cfg = {"accounts": accounts, "targets": {}}
+        with open(setup_mod.CONFIG_PATH, "w") as f:
+            json.dump(cfg, f)
+
+    def test_deletes_by_aqbanking_id(self, client, tmp_path):
         import src.server as server_mod
         setup_mod = server_mod.bank_setup
-        config = {
-            "accounts": [
-                {"id": "dkb", "name": "DKB", "type": "fints",
-                 "blz": "12030000", "url": "u", "login": "l", "hbci_version": 300, "aqbanking_id": 1},
-            ],
-            "targets": {},
-        }
-        with open(setup_mod.CONFIG_PATH, "w") as f:
-            json.dump(config, f)
+        self._write_config(setup_mod, [
+            {"id": "dkb", "name": "DKB", "type": "fints",
+             "blz": "12030000", "url": "u", "login": "l", "hbci_version": 300, "aqbanking_id": 1},
+        ])
         resp = client.delete("/accounts/1")
         assert resp.status_code == 200
-        saved = json.loads(open(setup_mod.CONFIG_PATH).read())
-        assert saved["accounts"] == []
+        assert json.loads(open(setup_mod.CONFIG_PATH).read())["accounts"] == []
+
+    def test_deletes_by_string_account_id(self, client, tmp_path):
+        """Incomplete registrations (no aqbanking_id) can be removed by string id."""
+        import src.server as server_mod
+        setup_mod = server_mod.bank_setup
+        self._write_config(setup_mod, [
+            {"id": "76030080", "name": "Consorsbank", "type": "fints",
+             "blz": "76030080", "url": "u", "login": "l", "hbci_version": 300},
+        ])
+        resp = client.delete("/accounts/76030080")
+        assert resp.status_code == 200
+        assert json.loads(open(setup_mod.CONFIG_PATH).read())["accounts"] == []
 
     def test_returns_404_for_unknown_id(self, client):
         resp = client.delete("/accounts/999")
+        assert resp.status_code == 404
+
+    def test_returns_404_for_unknown_string_id(self, client):
+        resp = client.delete("/accounts/nonexistent")
         assert resp.status_code == 404
