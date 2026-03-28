@@ -20,6 +20,7 @@ WORKDIR /home/txporter
 # Copy application
 COPY --chown=txporter:txporter src/ ./src/
 COPY --chown=txporter:txporter scripts/ ./scripts/
+COPY --chown=txporter:txporter config/bank_profiles.json ./config/bank_profiles.json
 RUN chmod +x scripts/*.sh
 
 EXPOSE 8090

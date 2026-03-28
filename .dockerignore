@@ -1,0 +1,19 @@
+.git
+.gitignore
+.dockerignore
+
+# Secrets and user-specific config — never in build context
+config/banks.json
+config/pinfile
+config/_copy.json
+
+# Tests not needed in image
+tests/
+
+# Docs
+docs/
+*.md
+
+# Python cache
+**/__pycache__
+**/*.pyc
