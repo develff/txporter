@@ -76,9 +76,9 @@ _ACCOUNT_TYPE_LABELS = {
     "bank":        "Girokonto",
     "savings":     "Sparkonto",
     "investment":  "Depot",
-    "creditCard":  "Kreditkarte",
-    "moneyMarket": "Tagesgeld",
-    "cash":        "Kasse",
+    "creditcard":  "Kreditkarte",
+    "moneymarket": "Tagesgeld",
+    "cash":        "Bar",
 }
 
 
@@ -108,7 +108,9 @@ def _parse_listaccounts(output: str) -> list:
         acc["iban"] = m.group(1) if m else None
         m = re.search(r"Account Type:\s*(\S+)", line)
         acc["account_type"] = m.group(1) if m else None
-        acc["account_type_label"] = _ACCOUNT_TYPE_LABELS.get(acc["account_type"], acc["account_type"]) if acc["account_type"] else None
+        acc["account_type_label"] = _ACCOUNT_TYPE_LABELS.get(
+            acc["account_type"].lower(), acc["account_type"]
+        ) if acc["account_type"] else None
         m = re.search(r"\bName:\s*([^,\n]+?)(?=\s+\w+:|$)", line)
         acc["owner_name"] = m.group(1).strip() if m else None
         accounts.append(acc)
