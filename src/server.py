@@ -4,6 +4,7 @@ Exposes endpoints to trigger transaction sync from financial accounts.
 """
 
 import uuid
+from datetime import datetime, timezone
 
 from flask import Flask, jsonify, render_template, request
 from aqbanking import AqBankingClient
@@ -38,33 +39,55 @@ def health():
 
 @app.route("/sync", methods=["POST"])
 def sync_all():
-    """Start sync for all configured accounts."""
+    """Start sync for all enabled, fully configured accounts.
+
+    Optional body: { "from_date": "YYYY-MM-DD", "to_date": "YYYY-MM-DD", "days": 30 }
+    """
+    body = request.get_json(force=True, silent=True) or {}
+    from_date = body.get("from_date")
+    to_date = body.get("to_date")
+    days = int(body.get("days", 30))
     results = {}
     for account in config["accounts"]:
-        results[account["id"]] = start_sync(account)
+        if not account.get("aqbanking_id"):
+            continue
+        if account.get("enabled") is False:
+            results[account["id"]] = {"status": "skipped", "message": "Account is disabled"}
+            continue
+        results[account["id"]] = start_sync(account, from_date=from_date, to_date=to_date, days=days)
     return jsonify(results)
 
 
 @app.route("/sync/<account_id>", methods=["POST"])
 def sync_one(account_id):
-    """Start sync for a single account by ID."""
+    """Start sync for a single account by ID.
+
+    Optional body: { "from_date": "YYYY-MM-DD", "to_date": "YYYY-MM-DD", "days": 30 }
+    """
     account = next((a for a in config["accounts"] if a["id"] == account_id), None)
     if not account:
         return jsonify({"error": f"Account '{account_id}' not found"}), 404
-    return jsonify(start_sync(account))
+    body = request.get_json(force=True, silent=True) or {}
+    from_date = body.get("from_date")
+    to_date = body.get("to_date")
+    days = int(body.get("days", 30))
+    return jsonify(start_sync(account, from_date=from_date, to_date=to_date, days=days))
 
 
 @app.route("/sync/<account_id>/confirm", methods=["POST"])
 def confirm_one(account_id):
     """Confirm TAN approval for a pending sync.
 
-    Query param: ?dry_run=true — parse and return transactions as JSON without
-    forwarding to any target. Useful for inspecting raw CTX field data.
+    Query params:
+      ?dry_run=true        — return raw parsed transactions, no forwarding to targets
+      ?export_format=json  — return raw transactions as JSON (for browser download)
+      ?export_format=csv   — return transactions as CSV text (for browser download)
     """
     if account_id not in _pending_syncs:
         return jsonify({"error": f"No pending sync for '{account_id}'"}), 404
     dry_run = request.args.get("dry_run", "").lower() == "true"
-    return jsonify(complete_sync(account_id, dry_run=dry_run))
+    export_format = request.args.get("export_format", "").lower() or None
+    return jsonify(complete_sync(account_id, dry_run=dry_run, export_format=export_format))
 
 
 @app.route("/accounts", methods=["GET"])
@@ -76,6 +99,7 @@ def list_accounts():
             "id": a["id"],
             "name": a["name"],
             "type": a["type"],
+            "enabled": a.get("enabled", True),
             **({"aqbanking_id": a["aqbanking_id"]} if "aqbanking_id" in a else {}),
             **({"iban": a["iban"]} if "iban" in a else {}),
             **({"account_number": a["account_number"]} if "account_number" in a else {}),
@@ -83,9 +107,23 @@ def list_accounts():
             **({"account_type_label": bank_setup._ACCOUNT_TYPE_LABELS.get(
                 a["account_type_label"].lower(), a["account_type_label"]
             )} if "account_type_label" in a else {}),
+            **({"last_sync_at": a["last_sync_at"]} if "last_sync_at" in a else {}),
         }
         for a in cfg["accounts"]
     ])
+
+
+@app.route("/accounts/<account_id>/toggle", methods=["POST"])
+def toggle_account(account_id):
+    """Enable or disable an account (excluded from Sync All when disabled)."""
+    cfg = bank_setup.load_config()
+    account = next((a for a in cfg["accounts"] if a["id"] == account_id), None)
+    if not account:
+        return jsonify({"error": f"Account '{account_id}' not found"}), 404
+    account["enabled"] = not account.get("enabled", True)
+    bank_setup.save_config(cfg)
+    config["accounts"] = cfg["accounts"]
+    return jsonify({"status": "ok", "enabled": account["enabled"]})
 
 
 @app.route("/accounts/<account_id>/rename", methods=["POST"])
@@ -449,27 +487,28 @@ def status():
     return jsonify({"status": "not implemented yet"})
 
 
-def start_sync(account: dict) -> dict:
+def start_sync(account: dict, from_date: str = None, to_date: str = None, days: int = 30) -> dict:
     """Start fetching transactions; for FinTS returns pending (awaiting TAN confirmation)."""
     account_id = account["id"]
     logger.info(f"Starting sync for account: {account_id}")
     try:
         client = AqBankingClient(account)
         if account.get("type") == "fints":
-            proc = client.start_fetch()
+            proc = client.start_fetch(from_date=from_date, to_date=to_date, days=days)
             _pending_syncs[account_id] = {"proc": proc, "client": client, "account": account}
             return {"status": "pending", "message": f"Confirm in banking app, then POST /sync/{account_id}/confirm"}
         else:
             transactions = client.fetch_transactions()
             logger.info(f"Fetched {len(transactions)} transactions from {account_id}")
             stats = _forward_to_targets(transactions, account)
+            _save_last_sync(account_id)
             return {"status": "ok", **stats}
     except Exception as e:
         logger.error(f"Error starting sync for {account_id}: {e}")
         return {"status": "error", "message": str(e)}
 
 
-def complete_sync(account_id: str, dry_run: bool = False) -> dict:
+def complete_sync(account_id: str, dry_run: bool = False, export_format: str = None) -> dict:
     """Confirm TAN and complete the pending sync."""
     pending = _pending_syncs.pop(account_id)
     account = pending["account"]
@@ -481,11 +520,27 @@ def complete_sync(account_id: str, dry_run: bool = False) -> dict:
         logger.info(f"Fetched {len(transactions)} transactions from {account_id}")
         if dry_run:
             return {"status": "dry_run", "transactions": transactions}
+        if export_format in ("json", "csv"):
+            return {"status": "ok", "export_format": export_format, "transactions": transactions}
         stats = _forward_to_targets(transactions, account)
+        _save_last_sync(account_id)
         return {"status": "ok", **stats}
     except Exception as e:
         logger.error(f"Error completing sync for {account_id}: {e}")
         return {"status": "error", "message": str(e)}
+
+
+def _save_last_sync(account_id: str) -> None:
+    """Persist last_sync_at timestamp for an account in banks.json."""
+    try:
+        cfg = bank_setup.load_config()
+        account = next((a for a in cfg["accounts"] if a["id"] == account_id), None)
+        if account:
+            account["last_sync_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            bank_setup.save_config(cfg)
+            config["accounts"] = cfg["accounts"]
+    except Exception as e:
+        logger.warning(f"Could not save last_sync_at for {account_id}: {e}")
 
 
 def _forward_to_targets(transactions: list, account: dict) -> dict:

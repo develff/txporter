@@ -135,9 +135,17 @@ class AqBankingClient:
             return self._fetch_paypal(days)
         raise ValueError(f"Use start_fetch/complete_fetch for account type: {account_type}")
 
-    def start_fetch(self, days: int = 30):
-        """Start a FinTS transaction request; returns a Popen handle waiting for TAN confirmation."""
-        from_date = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
+    def start_fetch(self, from_date: str = None, to_date: str = None, days: int = 30):
+        """Start a FinTS transaction request; returns a Popen handle waiting for TAN confirmation.
+
+        from_date / to_date: YYYY-MM-DD or YYYYMMDD strings (optional).
+        If omitted, defaults to the last `days` days.
+        """
+        if from_date is None:
+            from_date = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
+        else:
+            from_date = from_date.replace("-", "")
+
         account_id = str(self.account["aqbanking_id"])
 
         cmd = [
@@ -146,8 +154,10 @@ class AqBankingClient:
             "request",
             f"--aid={account_id}",
             f"--fromdate={from_date}",
-            "--transactions"
+            "--transactions",
         ]
+        if to_date:
+            cmd.insert(-1, f"--todate={to_date.replace('-', '')}")
 
         logger.info(f"Running: {' '.join(cmd)}")
         return subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)

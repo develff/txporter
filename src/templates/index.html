@@ -279,6 +279,34 @@
     .sync-result { font-size: 24px; font-weight: 700; text-align: center; margin: 8px 0 4px; }
     .sync-result-label { text-align: center; color: var(--text-muted); font-size: 13px; }
 
+    /* ── Date range picker ── */
+    .date-presets { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+    .date-preset { padding: 4px 10px; font-size: 12px; border: 1px solid var(--border); border-radius: 99px; background: transparent; color: var(--text-muted); cursor: pointer; transition: border-color .15s, color .15s; }
+    .date-preset.active { border-color: var(--primary); color: var(--primary); background: #eff6ff; }
+    .date-range-row { display: flex; gap: 10px; }
+    .date-range-row .form-group { flex: 1; }
+    input[type=date] { width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius); font-size: 14px; color: var(--text); background: #fff; }
+    input[type=date]:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(37,99,235,.1); }
+
+    /* ── Export target selector ── */
+    .export-targets { display: flex; gap: 8px; }
+    .export-target { flex: 1; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius); font-size: 13px; text-align: center; cursor: pointer; transition: border-color .15s, background .15s; }
+    .export-target.selected { border-color: var(--primary); background: #eff6ff; color: var(--primary); }
+
+    /* ── Sync All status list ── */
+    .sync-all-list { list-style: none; display: flex; flex-direction: column; gap: 6px; }
+    .sync-all-item { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius); }
+    .sync-all-item-name { flex: 1; font-size: 13px; font-weight: 500; }
+    .sync-all-item-status { font-size: 12px; color: var(--text-muted); }
+    .sync-all-item-status.pending { color: var(--warning); }
+    .sync-all-item-status.ok { color: var(--success); }
+    .sync-all-item-status.error { color: var(--danger); }
+    .sync-all-item-status.skipped { color: #94a3b8; }
+
+    /* ── Disabled account ── */
+    .card.disabled { opacity: .55; }
+    .badge-disabled { background: #f1f5f9; color: #94a3b8; }
+
     /* ── TAN mode list ── */
     .tan-mode-list { list-style: none; display: flex; flex-direction: column; gap: 6px; }
     .tan-mode-item {
@@ -302,7 +330,10 @@
 
 <header>
   <h1>txporter</h1>
-  <button class="btn-primary" id="btn-add">+ Add Account</button>
+  <div style="display:flex;gap:8px">
+    <button class="btn-secondary" id="btn-sync-all">Sync All</button>
+    <button class="btn-primary" id="btn-add">+ Add Account</button>
+  </div>
 </header>
 
 <main>
@@ -370,11 +401,15 @@ function renderAccounts() {
       : `<span class="badge badge-paypal">PayPal</span>`;
 
     const connected = a.aqbanking_id != null;
-    const canSync = a.type === "fints" && connected;
+    const enabled = a.enabled !== false;
+    const canSync = a.type === "fints" && connected && enabled;
 
     const statusBadge = connected
       ? `<span class="badge badge-ok">connected</span>`
       : `<span class="badge badge-warn">setup incomplete</span>`;
+    const enabledBadge = !enabled
+      ? `<span class="badge badge-disabled">disabled</span>`
+      : "";
     const typeLabelBadge = a.account_type_label
       ? `<span class="badge badge-fints" style="background:#f0fdf4;color:#166534">${esc(a.account_type_label)}</span>`
       : "";
@@ -393,16 +428,24 @@ function renderAccounts() {
       ? `<div class="card-hint">Setup did not complete &mdash; delete and add again to retry.</div>`
       : "";
 
+    const lastSyncLine = a.last_sync_at
+      ? `<div class="card-hint">Last sync: ${formatDate(a.last_sync_at)}</div>`
+      : "";
+
+    const toggleLabel = enabled ? "Disable" : "Enable";
+
     return `
-    <div class="card" id="account-card-${a.id}">
+    <div class="card${!enabled ? " disabled" : ""}" id="account-card-${a.id}">
       <div class="card-body">
         <div class="card-name">${esc(a.name || a.id)}</div>
-        <div class="card-meta">${typeBadge} ${typeLabelBadge} ${statusBadge}</div>
+        <div class="card-meta">${typeBadge} ${typeLabelBadge} ${statusBadge} ${enabledBadge}</div>
         ${accountLine}
         ${hintLine}
+        ${lastSyncLine}
       </div>
       <div class="card-actions">
-        ${canSync ? `<button class="btn-secondary btn-sm" onclick="startSync('${a.id}')">Sync</button>` : ""}
+        ${canSync ? `<button class="btn-secondary btn-sm" onclick="openSyncModal('${a.id}')">Sync</button>` : ""}
+        <button class="btn-secondary btn-sm" onclick="toggleAccount('${a.id}')">${toggleLabel}</button>
         <button class="btn-secondary btn-sm" onclick="openRenameModal('${a.id}', ${JSON.stringify(a.name || a.id).replace(/"/g, '&quot;')})">Rename</button>
         <button class="btn-danger btn-sm" onclick="deleteAccount('${a.id}')">Delete</button>
       </div>
@@ -536,15 +579,115 @@ async function deleteAccount(id) {
 }
 
 // ── Sync flow ──────────────────────────────────────────────────────────────────
+
+// Sync options state (shared between single sync and sync all)
+const syncOpts = { fromDate: null, toDate: null, days: 30, exportTarget: "firefly" };
+
+function syncDateSection() {
+  const today = new Date().toISOString().slice(0, 10);
+  const d30   = offsetDate(-30);
+  const d90   = offsetDate(-90);
+  return `
+  <div style="margin-bottom:14px">
+    <label style="margin-bottom:6px">Date range</label>
+    <div class="date-presets">
+      <button type="button" class="date-preset active" data-days="30" onclick="setSyncPreset(this,30)">Last 30 days</button>
+      <button type="button" class="date-preset" data-days="90" onclick="setSyncPreset(this,90)">Last 90 days</button>
+      <button type="button" class="date-preset" data-days="0" onclick="setSyncPreset(this,0)">Custom</button>
+    </div>
+    <div class="date-range-row" id="date-custom-row" style="display:none">
+      <div class="form-group">
+        <label>From</label>
+        <input type="date" id="sync-from" value="${d30}" max="${today}">
+      </div>
+      <div class="form-group">
+        <label>To</label>
+        <input type="date" id="sync-to" value="${today}" max="${today}">
+      </div>
+    </div>
+  </div>
+  <div style="margin-bottom:4px">
+    <label style="margin-bottom:6px">Export to</label>
+    <div class="export-targets">
+      <div class="export-target selected" id="et-firefly" onclick="setSyncTarget('firefly')">Firefly III</div>
+      <div class="export-target" id="et-csv" onclick="setSyncTarget('csv')">CSV download</div>
+      <div class="export-target" id="et-json" onclick="setSyncTarget('json')">JSON download</div>
+    </div>
+  </div>`;
+}
+
+function setSyncPreset(btn, days) {
+  document.querySelectorAll(".date-preset").forEach(b => b.classList.remove("active"));
+  btn.classList.add("active");
+  const custom = document.getElementById("date-custom-row");
+  if (custom) custom.style.display = days === 0 ? "flex" : "none";
+  syncOpts.days = days;
+  syncOpts.fromDate = null;
+  syncOpts.toDate = null;
+}
+
+function setSyncTarget(target) {
+  ["firefly", "csv", "json"].forEach(t => {
+    const el = document.getElementById(`et-${t}`);
+    if (el) el.classList.toggle("selected", t === target);
+  });
+  syncOpts.exportTarget = target;
+}
+
+function collectSyncDateOpts() {
+  const custom = document.getElementById("date-custom-row");
+  if (custom && custom.style.display !== "none") {
+    syncOpts.fromDate = document.getElementById("sync-from")?.value || null;
+    syncOpts.toDate   = document.getElementById("sync-to")?.value || null;
+    syncOpts.days     = 30;
+  }
+}
+
+function buildSyncBody() {
+  collectSyncDateOpts();
+  const body = {};
+  if (syncOpts.fromDate) { body.from_date = syncOpts.fromDate; body.to_date = syncOpts.toDate || undefined; }
+  else body.days = syncOpts.days || 30;
+  return body;
+}
+
+function syncConfirmUrl(accountId) {
+  const fmt = syncOpts.exportTarget;
+  if (fmt === "csv" || fmt === "json") return `/sync/${accountId}/confirm?export_format=${fmt}`;
+  return `/sync/${accountId}/confirm`;
+}
+
+function openSyncModal(accountId) {
+  // Reset opts
+  syncOpts.days = 30; syncOpts.fromDate = null; syncOpts.toDate = null; syncOpts.exportTarget = "firefly";
+  const account = state.accounts.find(a => a.id === accountId) || { name: accountId };
+  showModal(`
+  <div class="modal-header">
+    <div>
+      <div class="modal-title">Sync ${esc(account.name || accountId)}</div>
+      <div class="modal-subtitle">Configure sync options</div>
+    </div>
+    <button class="modal-close" onclick="closeModal()">×</button>
+  </div>
+  <div class="modal-body">
+    ${syncDateSection()}
+  </div>
+  <div class="modal-footer">
+    <button class="btn-secondary" onclick="closeModal()">Cancel</button>
+    <button class="btn-primary" onclick="startSync('${accountId}')">Start sync</button>
+  </div>`);
+}
+
 async function startSync(accountId) {
   state.syncAccountId = accountId;
-  showModal(syncConfirmScreen(accountId, false));
+  showModal(syncWaitingScreen(accountId, false));
   try {
-    const r = await api("POST", `/sync/${accountId}`);
+    const r = await api("POST", `/sync/${accountId}`, buildSyncBody());
     if (r.status === "pending") {
-      showModal(syncConfirmScreen(accountId, true));
+      showModal(syncWaitingScreen(accountId, true));
     } else if (r.status === "ok") {
       showModal(syncResultScreen(r, null));
+      await loadAccounts();
     } else {
       showModal(syncResultScreen(null, r.message || "Unknown error"));
     }
@@ -555,11 +698,17 @@ async function startSync(accountId) {
 
 async function confirmSync() {
   const accountId = state.syncAccountId;
-  showModal(syncConfirmScreen(accountId, true, true));
+  showModal(syncWaitingScreen(accountId, true, true));
   try {
-    const r = await api("POST", `/sync/${accountId}/confirm`);
+    const r = await api("POST", syncConfirmUrl(accountId));
     if (r.status === "ok") {
-      showModal(syncResultScreen(r, null));
+      if (r.export_format) {
+        triggerDownload(r.transactions, r.export_format, accountId);
+        showModal(syncExportScreen(r.transactions.length, r.export_format));
+      } else {
+        showModal(syncResultScreen(r, null));
+      }
+      await loadAccounts();
     } else {
       showModal(syncResultScreen(null, r.message || "Unknown error"));
     }
@@ -568,7 +717,7 @@ async function confirmSync() {
   }
 }
 
-function syncConfirmScreen(accountId, ready, loading) {
+function syncWaitingScreen(accountId, ready, loading) {
   const account = state.accounts.find(a => a.id === accountId) || { name: accountId };
   return `
   <div class="modal-header">
@@ -607,7 +756,7 @@ function syncResultScreen(stats, error) {
       <button class="btn-primary" onclick="closeModal()">Close</button>
     </div>`;
   }
-  const found    = stats.found    ?? stats ?? 0;
+  const found    = stats.found    ?? 0;
   const imported = stats.imported ?? found;
   const skipped  = stats.skipped  ?? 0;
   const rows = [
@@ -631,6 +780,174 @@ function syncResultScreen(stats, error) {
   <div class="modal-footer">
     <button class="btn-primary" onclick="closeModal()">Close</button>
   </div>`;
+}
+
+function syncExportScreen(count, format) {
+  return `
+  <div class="modal-header">
+    <div><div class="modal-title">Export complete</div></div>
+    <button class="modal-close" onclick="closeModal()">×</button>
+  </div>
+  <div class="modal-body">
+    <div class="success-screen">
+      <div class="icon">↓</div>
+      <h3>${count} transaction${count !== 1 ? "s" : ""} exported</h3>
+      <p>Download started as .${esc(format)} file.</p>
+    </div>
+  </div>
+  <div class="modal-footer">
+    <button class="btn-primary" onclick="closeModal()">Close</button>
+  </div>`;
+}
+
+// ── Sync All flow ───────────────────────────────────────────────────────────────
+
+function openSyncAllModal() {
+  const eligible = state.accounts.filter(a => a.aqbanking_id && a.enabled !== false);
+  if (!eligible.length) {
+    alert("No enabled, connected accounts to sync.");
+    return;
+  }
+  syncOpts.days = 30; syncOpts.fromDate = null; syncOpts.toDate = null; syncOpts.exportTarget = "firefly";
+  showModal(`
+  <div class="modal-header">
+    <div>
+      <div class="modal-title">Sync All</div>
+      <div class="modal-subtitle">${eligible.length} account${eligible.length !== 1 ? "s" : ""} will be synced</div>
+    </div>
+    <button class="modal-close" onclick="closeModal()">×</button>
+  </div>
+  <div class="modal-body">
+    ${syncDateSection()}
+  </div>
+  <div class="modal-footer">
+    <button class="btn-secondary" onclick="closeModal()">Cancel</button>
+    <button class="btn-primary" onclick="runSyncAll()">Start sync</button>
+  </div>`);
+}
+
+async function runSyncAll() {
+  collectSyncDateOpts();
+  const body = buildSyncBody();
+  // Show status list
+  const eligible = state.accounts.filter(a => a.aqbanking_id && a.enabled !== false);
+  const statusMap = {};
+  eligible.forEach(a => { statusMap[a.id] = { status: "waiting", name: a.name || a.id }; });
+
+  function renderSyncAllModal(allowClose) {
+    const items = eligible.map(a => {
+      const s = statusMap[a.id];
+      let statusHtml = "";
+      if (s.status === "waiting")  statusHtml = `<span class="sync-all-item-status">Waiting…</span>`;
+      if (s.status === "starting") statusHtml = `<span class="sync-all-item-status"><span class="spinner" style="width:14px;height:14px"></span></span>`;
+      if (s.status === "pending")  statusHtml = `<span class="sync-all-item-status pending">Confirm TAN &nbsp;<button class="btn-primary btn-sm" onclick="confirmSyncAllItem('${a.id}')">Done</button></span>`;
+      if (s.status === "ok")       statusHtml = `<span class="sync-all-item-status ok">✓ ${s.found ?? 0} found, ${s.imported ?? 0} imported</span>`;
+      if (s.status === "error")    statusHtml = `<span class="sync-all-item-status error">✗ ${esc(s.message || "Error")}</span>`;
+      if (s.status === "skipped")  statusHtml = `<span class="sync-all-item-status skipped">Skipped (disabled)</span>`;
+      return `<li class="sync-all-item"><span class="sync-all-item-name">${esc(s.name)}</span>${statusHtml}</li>`;
+    }).join("");
+    const allDone = eligible.every(a => ["ok","error","skipped"].includes(statusMap[a.id].status));
+    showModal(`
+    <div class="modal-header">
+      <div><div class="modal-title">Sync All</div></div>
+      ${allowClose || allDone ? `<button class="modal-close" onclick="closeModal(); loadAccounts();">×</button>` : ""}
+    </div>
+    <div class="modal-body">
+      <ul class="sync-all-list">${items}</ul>
+    </div>
+    <div class="modal-footer">
+      ${allDone ? `<button class="btn-primary" onclick="closeModal(); loadAccounts();">Done</button>` : ""}
+    </div>`);
+  }
+
+  renderSyncAllModal(false);
+
+  // Start all syncs
+  for (const a of eligible) {
+    statusMap[a.id].status = "starting";
+    renderSyncAllModal(false);
+    try {
+      const r = await api("POST", `/sync/${a.id}`, body);
+      if (r.status === "pending") {
+        statusMap[a.id].status = "pending";
+      } else if (r.status === "ok") {
+        statusMap[a.id] = { ...statusMap[a.id], status: "ok", ...r };
+        _save_last_sync_ui(a.id);
+      } else {
+        statusMap[a.id] = { ...statusMap[a.id], status: "error", message: r.message };
+      }
+    } catch (e) {
+      statusMap[a.id] = { ...statusMap[a.id], status: "error", message: e.message };
+    }
+    renderSyncAllModal(false);
+  }
+
+  // Expose confirmSyncAllItem in closure
+  window._syncAllStatusMap = statusMap;
+  window._syncAllEligible  = eligible;
+  window._renderSyncAll    = renderSyncAllModal;
+}
+
+async function confirmSyncAllItem(accountId) {
+  const statusMap = window._syncAllStatusMap;
+  const renderSyncAllModal = window._renderSyncAll;
+  statusMap[accountId].status = "starting";
+  renderSyncAllModal(false);
+  try {
+    const r = await api("POST", syncConfirmUrl(accountId));
+    if (r.status === "ok") {
+      if (r.export_format) {
+        triggerDownload(r.transactions, r.export_format, accountId);
+        statusMap[accountId] = { ...statusMap[accountId], status: "ok", found: r.transactions.length, imported: r.transactions.length };
+      } else {
+        statusMap[accountId] = { ...statusMap[accountId], status: "ok", ...r };
+      }
+    } else {
+      statusMap[accountId] = { ...statusMap[accountId], status: "error", message: r.message };
+    }
+  } catch (e) {
+    statusMap[accountId] = { ...statusMap[accountId], status: "error", message: e.message };
+  }
+  renderSyncAllModal(false);
+}
+
+// ── Account enable/disable ──────────────────────────────────────────────────────
+async function toggleAccount(accountId) {
+  try {
+    await api("POST", `/accounts/${accountId}/toggle`);
+    await loadAccounts();
+  } catch (e) {
+    alert("Error: " + e.message);
+  }
+}
+
+// ── Download helpers ────────────────────────────────────────────────────────────
+function triggerDownload(transactions, format, accountId) {
+  let content, mime, ext;
+  if (format === "json") {
+    content = JSON.stringify(transactions, null, 2);
+    mime = "application/json";
+    ext = "json";
+  } else {
+    const fields = ["date", "amount_eur", "currency_code", "remote_name", "purpose", "remote_iban", "external_id"];
+    const csvRows = [fields.join(",")];
+    for (const tx of transactions) {
+      csvRows.push(fields.map(f => {
+        const v = tx[f] ?? "";
+        return String(v).includes(",") || String(v).includes('"') ? `"${String(v).replace(/"/g, '""')}"` : v;
+      }).join(","));
+    }
+    content = csvRows.join("\r\n");
+    mime = "text/csv";
+    ext = "csv";
+  }
+  const blob = new Blob([content], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${accountId}_${new Date().toISOString().slice(0,10)}.${ext}`;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 // ── Setup wizard ───────────────────────────────────────────────────────────────
@@ -1146,12 +1463,25 @@ function esc(str) {
   return String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
+function offsetDate(days) {
+  const d = new Date();
+  d.setDate(d.getDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+function formatDate(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return isNaN(d) ? iso : d.toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" });
+}
+
 // ── Close modal on backdrop click ─────────────────────────────────────────────
 document.getElementById("modal").addEventListener("click", function(e) {
   if (e.target === this) closeModal();
 });
 
 document.getElementById("btn-add").addEventListener("click", openSetupWizard);
+document.getElementById("btn-sync-all").addEventListener("click", openSyncAllModal);
 
 // ── Init ───────────────────────────────────────────────────────────────────────
 loadAccounts();
