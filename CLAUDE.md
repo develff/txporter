@@ -58,19 +58,17 @@ PayPal          ────► │                ──► CSV File
 |------|-----|-----|----------|
 | DKB | 12030000 | https://fints.dkb.de/fints | 7940 (DKB App) |
 | 1822direkt | 50050222 | https://fints.1822direkt.com/fints/hbci | 6903 (1822TAN+, HKTAN V6/PSD2, read-only since 2025-09-16) |
-| Consorsbank | 76030080 | https://fin.consorsbank.de/auth | pushTAN (URL unverified) |
+| Consorsbank | 76030080 | https://brokerage-hbci.consorsbank.de/hbci | pushTAN. Login = Kontonummer + 3-stellige Ber.-Nr., z.B. 900123456001 |
 
-## AqBanking setup flow (per bank, one-time interactive)
+## AqBanking setup flow (automated via REST API)
 
-```bash
-aqhbci-tool4 adduser -t pintan --context=1 -b BLZ -u LOGIN -s URL -N "Name" --hbciversion=300
-aqhbci-tool4 getsysid -u 1        # triggers TAN in app
-aqhbci-tool4 listitanmodes -u 1
-aqhbci-tool4 setitanmode -u 1 -m TAN_MODE
-aqhbci-tool4 getaccounts -u 1     # triggers TAN in app
-aqhbci-tool4 listaccounts -v
-aqhbci-tool4 getaccsepa -a ACCOUNT_ID
-```
+Bank registration is now driven by the REST API (`POST /setup`, `POST /setup/{id}/tanmode`,
+`POST /setup/{id}/confirm`). See `docs/setup.md` for the full flow.
+
+The underlying `aqhbci-tool4` commands executed per step:
+1. `adduser` → `getsysid` → `listitanmodes` (→ `setitanmode` + start `getaccounts` if TAN mode known)
+2. `setitanmode` + start `getaccounts` (triggers TAN in app)
+3. wait for `getaccounts` → `getaccsepa` → `listaccounts` → write `aqbanking_id` to banks.json
 
 ## Firefly III integration
 
@@ -82,10 +80,12 @@ aqhbci-tool4 getaccsepa -a ACCOUNT_ID
 
 1. ~~Choose and test Docker base image~~ — done (openSUSE Tumbleweed)
 2. ~~Get Docker build working~~ — Dockerfile in place
-3. ~~Implement scripts/setup.sh for interactive bank registration~~ — done
+3. ~~Implement scripts/setup.sh for interactive bank registration~~ — done (replaced by REST API, issue #13)
 4. ~~Implement aqbanking.py CTX output parsing~~ — done (issue #5)
 5. ~~Implement firefly.py transaction mapping to Firefly III storeTransaction API~~ — done (issue #7)
 6. ~~End-to-end test: DKB → txporter → Firefly III~~ — done, amounts and deposit/withdrawal mapping correct
+7. ~~Skip zero-amount (pending/reserved) transactions~~ — done (issue #11)
+8. ~~REST API for interactive bank setup (replaces setup.sh)~~ — done (issue #13)
 
 ## Development Guidelines
 

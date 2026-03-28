@@ -1,0 +1,558 @@
+"""
+txporter - Bank setup state machine
+Manages the multi-step REST flow for registering new banks via aqhbci-tool4.
+"""
+
+import fcntl
+import json
+import logging
+import os
+import pty
+import re
+import select
+import subprocess
+import termios
+import time
+from typing import Optional
+
+logger = logging.getLogger(__name__)
+
+PINFILE = os.environ.get("TXPORTER_PINFILE", "/home/txporter/config/pinfile")
+CONFIG_PATH = os.environ.get("TXPORTER_CONFIG", "/home/txporter/config/banks.json")
+PROFILES_PATH = os.environ.get("TXPORTER_PROFILES", "/home/txporter/config/bank_profiles.json")
+
+
+def load_profiles() -> dict:
+    with open(PROFILES_PATH) as f:
+        return json.load(f)
+
+
+def _write_pin(pinfile: str, blz: str, login: str, pin: str):
+    """Write or update a PIN entry in the pinfile.
+
+    AqBanking pinfile format: PIN_{BLZ}_{LOGIN} = "PIN"
+    """
+    key = f"PIN_{blz}_{login}"
+    entry = f'{key} = "{pin}"\n'
+    lines = []
+    try:
+        with open(pinfile) as f:
+            lines = f.readlines()
+    except FileNotFoundError:
+        pass
+    for i, line in enumerate(lines):
+        if line.startswith(f"{key} ") or line.startswith(f"{key}="):
+            lines[i] = entry
+            break
+    else:
+        lines.append(entry)
+    os.makedirs(os.path.dirname(pinfile) or ".", exist_ok=True)
+    with open(pinfile, "w") as f:
+        f.writelines(lines)
+
+
+def _resolve_user_index(login: str) -> str:
+    """Find the AqBanking unique user index for the given login from listusers output."""
+    result = subprocess.run(["aqhbci-tool4", "listusers"], capture_output=True, text=True)
+    for line in result.stdout.splitlines():
+        if login in line:
+            m = re.search(r"Unique Id:\s*(\d+)", line)
+            if m:
+                return m.group(1)
+    return "1"
+
+
+def _parse_tan_modes(output: str) -> list:
+    """Parse aqhbci-tool4 listitanmodes output into [{id, description}, ...]."""
+    modes = []
+    for line in output.splitlines():
+        m = re.match(r"\s*(\d+)\s*[:\-]\s*(.*)", line)
+        if m:
+            modes.append({"id": int(m.group(1)), "description": m.group(2).strip()})
+    return modes
+
+
+def _parse_listaccounts(output: str) -> list:
+    """Parse aqhbci-tool4 listaccounts -v output into a list of account dicts.
+
+    AqBanking 6.9.x emits one line per account:
+      Account N: Bank: BBBBBBBB Account Number: NNNN ... LocalUniqueId: X
+
+    Each returned dict contains:
+      aqbanking_id (int|None), bank_code (str|None), account_number (str|None),
+      iban (str|None)
+    """
+    accounts = []
+    for line in output.splitlines():
+        if not re.match(r"Account\s+\d+", line, re.IGNORECASE):
+            continue
+        acc: dict = {}
+        m = re.search(r"LocalUniqueId:\s*(\d+)", line)
+        acc["aqbanking_id"] = int(m.group(1)) if m else None
+        m = re.search(r"Bank:\s*(\d+)", line)
+        acc["bank_code"] = m.group(1) if m else None
+        m = re.search(r"Account Number:\s*(\S+)", line)
+        acc["account_number"] = m.group(1) if m else None
+        m = re.search(r"IBAN:\s*(\S+)", line)
+        acc["iban"] = m.group(1) if m else None
+        accounts.append(acc)
+    return accounts
+
+
+def _parse_cert_info(output: str) -> dict:
+    """Extract certificate details from GWEN's cert acceptance prompt output."""
+    field_map = {
+        "Name": "name",
+        "Organisation": "organisation",
+        "Country": "country",
+        "City": "city",
+        "Valid after": "valid_after",
+        "Valid until": "valid_until",
+        "Hash (MD5)": "hash_md5",
+        "Hash (SHA1)": "hash_sha1",
+        "Status": "status",
+    }
+    cert = {}
+    for line in output.splitlines():
+        for field, key in field_map.items():
+            if line.strip().startswith(field):
+                parts = line.split(":", 1)
+                if len(parts) == 2:
+                    cert[key] = parts[1].strip()
+    return cert
+
+
+def load_config() -> dict:
+    with open(CONFIG_PATH) as f:
+        return json.load(f)
+
+
+def save_config(config: dict):
+    with open(CONFIG_PATH, "w") as f:
+        json.dump(config, f, indent=2)
+        f.write("\n")
+
+
+class SetupSession:
+    def __init__(self, setup_id: str, account_id: str, login: str,
+                 blz: str, url: str, hbci_version: int,
+                 tan_mode: Optional[int], name: str):
+        self.setup_id = setup_id
+        self.account_id = account_id
+        self.login = login
+        self.blz = blz
+        self.url = url
+        self.hbci_version = hbci_version
+        self.tan_mode = tan_mode
+        self.name = name
+        self.user_index: Optional[str] = None
+        self.cert_proc = None  # getsysid Popen, waiting for certificate acceptance
+        self.proc = None       # getaccounts Popen, waiting for TAN confirmation
+
+    def step1_register(self) -> dict:
+        """Run adduser, then start getsysid in a PTY.
+
+        Waits up to 15 s for the certificate prompt to appear and returns the
+        cert details so the caller can verify before accepting.
+        If the cert is already trusted getsysid exits without prompting and the
+        flow continues directly to listitanmodes (status: pending_tan_mode /
+        pending_confirm).
+        """
+        self._run_adduser()
+        self.user_index = _resolve_user_index(self.login)
+        logger.info("Resolved user_index=%s for login=%s", self.user_index, self.login)
+        self._start_getsysid()
+        cert_info = self._wait_for_cert_prompt(timeout=15)
+
+        if self.cert_proc.poll() is not None:
+            # Cert was already trusted; getsysid completed without prompting.
+            self._check_getsysid_returncode()
+            return self._after_getsysid()
+
+        return {
+            "setup_id": self.setup_id,
+            "status": "pending_cert",
+            "message": f"Bank server presented a certificate. Accept with POST /setup/{self.setup_id}/acceptcert",
+            "certificate": cert_info,
+        }
+
+    def step1b_accept_cert(self, accept: bool) -> dict:
+        """Send 1 (yes) or 2 (no) to the waiting getsysid process, then continue."""
+        self._complete_getsysid(accept)
+        return self._after_getsysid()
+
+    def _after_getsysid(self) -> dict:
+        """Run listitanmodes (+ optional setitanmode/getaccounts) after getsysid."""
+        tan_modes = self._run_listitanmodes()
+        if not tan_modes:
+            # Some banks (e.g. Consorsbank) don't include TAN modes in the BPD
+            # returned by getsysid — query them explicitly from the bank.
+            self._run_getitanmodes()
+            tan_modes = self._run_listitanmodes()
+
+        if self.tan_mode is not None:
+            self._run_setitanmode(self.tan_mode)
+            return {
+                "setup_id": self.setup_id,
+                "status": "pending_confirm",
+                "message": f"Confirm TAN in banking app, then POST /setup/{self.setup_id}/confirm",
+                "tan_modes": tan_modes,
+                "auto_selected_tan_mode": self.tan_mode,
+            }
+        if not tan_modes:
+            # Still no modes — bank uses One-Step TAN; proceed directly.
+            return {
+                "setup_id": self.setup_id,
+                "status": "pending_confirm",
+                "message": f"Confirm TAN in banking app (or wait), then POST /setup/{self.setup_id}/confirm",
+                "tan_modes": [],
+            }
+        return {
+            "setup_id": self.setup_id,
+            "status": "pending_tan_mode",
+            "message": f"Select TAN mode, then POST /setup/{self.setup_id}/tanmode",
+            "tan_modes": tan_modes,
+        }
+
+    def step2_set_tanmode(self, tan_mode: int) -> dict:
+        """Set TAN mode (getaccounts is triggered in step3_confirm)."""
+        self._run_setitanmode(tan_mode)
+        return {
+            "setup_id": self.setup_id,
+            "status": "pending_confirm",
+            "message": f"Confirm TAN in banking app, then POST /setup/{self.setup_id}/confirm",
+        }
+
+    def step3_confirm(self, timeout: int = 120) -> dict:
+        """Start getaccounts; returns pending_tan if the bank requires TAN entry."""
+        self._start_getaccounts()
+        challenge = self._wait_for_tan_prompt_or_exit(timeout)
+        if challenge is not None:
+            return {
+                "setup_id": self.setup_id,
+                "status": "pending_tan",
+                "message": f"Enter TAN from your banking app, then POST /setup/{self.setup_id}/tan",
+                "challenge": challenge,
+            }
+        return self._finalize_setup()
+
+    def step3b_submit_tan(self, tan: str, timeout: int = 60) -> dict:
+        """Submit TAN for banks that require explicit TAN entry (e.g. Consorsbank)."""
+        try:
+            os.write(self._acc_master_fd, f"{tan}\n".encode())
+        except OSError:
+            pass
+
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if self.proc.poll() is not None:
+                break
+            remaining = deadline - time.monotonic()
+            rlist, _, _ = select.select([self._acc_master_fd], [], [], min(0.5, remaining))
+            if rlist:
+                try:
+                    self._acc_output += os.read(self._acc_master_fd, 4096)
+                except OSError:
+                    break
+
+        try:
+            self.proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+            raise RuntimeError("getaccounts timed out after TAN entry")
+        finally:
+            try:
+                os.close(self._acc_master_fd)
+            except OSError:
+                pass
+
+        if self.proc.returncode != 0:
+            raise RuntimeError(
+                f"getaccounts failed: {self._acc_output.decode('utf-8', errors='replace')}"
+            )
+        return self._finalize_setup()
+
+    # ── Private helpers ────────────────────────────────────────────────────────
+
+    def _run_adduser(self):
+        # Remove any stale users with the same login at the same bank to avoid
+        # duplicates from previously failed setup attempts.
+        self._delete_existing_users()
+        cmd = [
+            "aqhbci-tool4", "adduser",
+            "-t", "pintan",
+            "--context=1",
+            "-b", self.blz,
+            "-u", self.login,
+            "-s", self.url,
+            "-N", self.name,
+            f"--hbciversion={self.hbci_version}",
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(f"adduser failed: {result.stderr}")
+
+    def _delete_existing_users(self):
+        """Delete any existing AqBanking users matching this login+bank to avoid duplicates."""
+        result = subprocess.run(["aqhbci-tool4", "listusers"], capture_output=True, text=True)
+        for line in result.stdout.splitlines():
+            if self.blz in line and self.login in line:
+                m = re.search(r"Unique Id:\s*(\d+)", line)
+                if m:
+                    uid = m.group(1)
+                    logger.info("Deleting stale user uid=%s for login=%s blz=%s", uid, self.login, self.blz)
+                    subprocess.run(["aqhbci-tool4", "deluser", "-u", uid],
+                                   capture_output=True, text=True)
+
+    def _start_getsysid(self):
+        """Start getsysid inside a PTY so GWEN's interactive cert prompt works.
+
+        GWEN's GUI layer requires a terminal to display the cert acceptance
+        dialog. Without a PTY it silently fails with 'Could not connect (-43)'.
+        --pinfile is passed as a global option since getsysid rejects it as a
+        subcommand-level flag.
+        """
+        master_fd, slave_fd = pty.openpty()
+        cmd = ["aqhbci-tool4", f"--pinfile={PINFILE}", "getsysid", "-u", self.user_index]
+        self.cert_proc = subprocess.Popen(
+            cmd, stdin=slave_fd, stdout=slave_fd, stderr=slave_fd, close_fds=True
+        )
+        os.close(slave_fd)
+        self._cert_master_fd = master_fd
+        self._cert_output = b""
+
+    def _wait_for_cert_prompt(self, timeout: int = 15) -> dict:
+        """Read PTY output until GWEN's cert prompt appears; return parsed cert info.
+
+        Returns an empty dict if the process exits before prompting (cert already trusted).
+        """
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if self.cert_proc.poll() is not None:
+                return {}  # already exited — cert was pre-trusted
+            remaining = deadline - time.monotonic()
+            rlist, _, _ = select.select([self._cert_master_fd], [], [], min(0.5, remaining))
+            if rlist:
+                try:
+                    self._cert_output += os.read(self._cert_master_fd, 4096)
+                except OSError:
+                    break
+            if b"Please enter your choice:" in self._cert_output:
+                return _parse_cert_info(self._cert_output.decode("utf-8", errors="replace"))
+        return {}
+
+    def _complete_getsysid(self, accept: bool, timeout: int = 30):
+        """Send 1 (accept) or 2 (reject) to the PTY and wait for getsysid to finish."""
+        if self.cert_proc.poll() is not None:
+            self._check_getsysid_returncode()
+            if not accept:
+                raise RuntimeError("Certificate rejected by user")
+            return
+
+        answer = b"1\n" if accept else b"2\n"
+        try:
+            os.write(self._cert_master_fd, answer)
+        except OSError:
+            pass
+
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if self.cert_proc.poll() is not None:
+                break
+            rlist, _, _ = select.select([self._cert_master_fd], [], [], 0.5)
+            if rlist:
+                try:
+                    self._cert_output += os.read(self._cert_master_fd, 4096)
+                except OSError:
+                    break
+
+        try:
+            self.cert_proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self.cert_proc.kill()
+            raise RuntimeError("getsysid timed out waiting for bank response")
+        finally:
+            try:
+                os.close(self._cert_master_fd)
+            except OSError:
+                pass
+
+        if not accept:
+            raise RuntimeError("Certificate rejected by user")
+        self._check_getsysid_returncode()
+
+    def _check_getsysid_returncode(self):
+        if self.cert_proc.returncode != 0:
+            output = self._cert_output.decode("utf-8", errors="replace")
+            raise RuntimeError(f"getsysid failed: {output}")
+
+    def _run_getitanmodes(self):
+        """Query the bank for supported iTAN modes and cache them locally."""
+        cmd = ["aqhbci-tool4", f"--pinfile={PINFILE}", "getitanmodes", "-u", self.user_index]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            logger.warning("getitanmodes failed (non-fatal): %s", result.stderr)
+
+    def _run_listitanmodes(self) -> list:
+        cmd = ["aqhbci-tool4", "listitanmodes", "-u", self.user_index]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        return _parse_tan_modes(result.stdout)
+
+    def _run_setitanmode(self, tan_mode: int):
+        self.tan_mode = tan_mode
+        cmd = ["aqhbci-tool4", "setitanmode", "-u", self.user_index, "-m", str(tan_mode)]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        logger.info("setitanmode(%s, %s) rc=%s stdout=%r stderr=%r",
+                    self.user_index, tan_mode, result.returncode, result.stdout, result.stderr)
+        if result.returncode != 0:
+            raise RuntimeError(f"setitanmode failed: {result.stderr}")
+
+    def _start_getaccounts(self):
+        """Start getaccounts in a PTY to allow TAN entry if the bank requires it.
+
+        setsid + TIOCSCTTY makes the PTY slave the controlling terminal so that
+        GWEN's TAN entry dialog (which opens /dev/tty) can interact with it.
+        """
+        master_fd, slave_fd = pty.openpty()
+        cmd = ["aqhbci-tool4", f"--pinfile={PINFILE}", "getaccounts", "-u", self.user_index]
+
+        def make_ctty():
+            os.setsid()
+            fcntl.ioctl(0, termios.TIOCSCTTY, 0)  # fd 0 == stdin == slave PTY
+
+        self.proc = subprocess.Popen(
+            cmd, stdin=slave_fd, stdout=slave_fd, stderr=slave_fd,
+            close_fds=True, preexec_fn=make_ctty
+        )
+        os.close(slave_fd)
+        self._acc_master_fd = master_fd
+        self._acc_output = b""
+
+    def _wait_for_tan_prompt_or_exit(self, timeout: int) -> Optional[str]:
+        """Read getaccounts PTY output until TAN prompt appears or process exits.
+
+        Returns the challenge string if TAN entry is required, None if the process
+        exits cleanly (e.g. pushTAN — user confirmed in banking app).
+        """
+        deadline = time.monotonic() + timeout
+        pty_eof = False
+        while time.monotonic() < deadline:
+            if self.proc.poll() is not None:
+                # Drain any remaining PTY output before deciding.
+                self._drain_acc_pty()
+                try:
+                    os.close(self._acc_master_fd)
+                except OSError:
+                    pass
+                output_text = self._acc_output.decode("utf-8", errors="replace")
+                if b"Input:" in self._acc_output:
+                    return self._extract_tan_challenge()
+                if self.proc.returncode != 0:
+                    raise RuntimeError(f"getaccounts failed: {output_text}")
+                return None
+
+            remaining = deadline - time.monotonic()
+            rlist, _, _ = select.select([self._acc_master_fd], [], [], min(0.5, remaining))
+            if rlist:
+                try:
+                    self._acc_output += os.read(self._acc_master_fd, 4096)
+                except OSError:
+                    pty_eof = True
+                    break
+
+            if b"Input:" in self._acc_output:
+                return self._extract_tan_challenge()
+
+        if pty_eof:
+            # PTY slave closed — process has exited; collect exit code.
+            try:
+                self.proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+            try:
+                os.close(self._acc_master_fd)
+            except OSError:
+                pass
+            output_text = self._acc_output.decode("utf-8", errors="replace")
+            if b"Input:" in self._acc_output:
+                return self._extract_tan_challenge()
+            if self.proc.returncode != 0:
+                raise RuntimeError(f"getaccounts failed: {output_text}")
+            return None
+
+        self.proc.kill()
+        try:
+            os.close(self._acc_master_fd)
+        except OSError:
+            pass
+        raise RuntimeError("getaccounts timed out")
+
+    def _drain_acc_pty(self):
+        """Read all immediately available data from the getaccounts PTY master fd."""
+        while True:
+            rlist, _, _ = select.select([self._acc_master_fd], [], [], 0.1)
+            if not rlist:
+                break
+            try:
+                self._acc_output += os.read(self._acc_master_fd, 4096)
+            except OSError:
+                break
+
+    def _extract_tan_challenge(self) -> str:
+        text = self._acc_output.decode("utf-8", errors="replace")
+        m = re.search(
+            r"The server provided the following challenge:\s*(.*?)\s*Input:", text, re.DOTALL
+        )
+        if m:
+            return m.group(1).strip()
+        return "Please enter your TAN."
+
+    def _finalize_setup(self) -> dict:
+        self._run_getaccsepa()
+        accounts = self._listaccounts()
+        aqbanking_id = self._find_aqbanking_id(accounts)
+        iban = self._find_iban(accounts)
+        self._write_back(aqbanking_id, iban)
+        return {
+            "status": "ok",
+            "account_id": self.account_id,
+            "aqbanking_id": aqbanking_id,
+            "iban": iban,
+            "accounts": accounts,
+        }
+
+    def _run_getaccsepa(self):
+        cmd = ["aqhbci-tool4", f"--pinfile={PINFILE}", "getaccsepa", "-u", self.user_index]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            logger.warning("getaccsepa failed (non-fatal): %s", result.stderr)
+
+    def _listaccounts(self) -> list:
+        result = subprocess.run(["aqhbci-tool4", "listaccounts", "-v"], capture_output=True, text=True)
+        return _parse_listaccounts(result.stdout)
+
+    def _find_aqbanking_id(self, accounts: list) -> Optional[int]:
+        for acc in accounts:
+            if acc.get("bank_code") == self.blz:
+                return acc.get("aqbanking_id")
+        return None
+
+    def _find_iban(self, accounts: list) -> Optional[str]:
+        for acc in accounts:
+            if acc.get("bank_code") == self.blz:
+                return acc.get("iban")
+        return None
+
+    def _write_back(self, aqbanking_id: Optional[int], iban: Optional[str]):
+        """Write aqbanking_id (and iban if found) back into banks.json."""
+        if aqbanking_id is None:
+            logger.warning("Could not determine aqbanking_id for account %s", self.account_id)
+        config = load_config()
+        for acc in config["accounts"]:
+            if acc["id"] == self.account_id:
+                if aqbanking_id is not None:
+                    acc["aqbanking_id"] = aqbanking_id
+                if iban:
+                    acc["iban"] = iban
+                break
+        save_config(config)
