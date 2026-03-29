@@ -7,12 +7,18 @@ import os
 import re
 import select
 import subprocess
+import threading
 import time
 import logging
 from datetime import datetime, timedelta
 from urllib.parse import unquote
 
 logger = logging.getLogger(__name__)
+
+# aqbanking-cli uses a file lock on its config directory, so only one process
+# can run at a time.  This lock serialises all invocations within the server
+# process and prevents the scheduler and manual syncs from conflicting.
+_aqbanking_lock = threading.Lock()
 
 PINFILE = os.environ.get("TXPORTER_PINFILE", "/home/txporter/config/pinfile")
 
@@ -182,14 +188,27 @@ class AqBankingClient:
         if to_date:
             cmd.insert(-1, f"--todate={to_date.replace('-', '')}")
 
-        logger.info("Running: %s", " ".join(cmd))
-        self._proc = subprocess.Popen(
-            cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-        )
-        self._stdout_buf = b""
-        self._stderr_buf = b""
+        if not _aqbanking_lock.acquire(timeout=10):
+            raise RuntimeError(
+                "Another aqbanking-cli process is already running — please wait and retry"
+            )
+        try:
+            logger.info("Running: %s", " ".join(cmd))
+            self._proc = subprocess.Popen(
+                cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            )
+            self._stdout_buf = b""
+            self._stderr_buf = b""
 
-        return self._drain_until_push_or_exit(_DRAIN_TIMEOUT)
+            result = self._drain_until_push_or_exit(_DRAIN_TIMEOUT)
+            if result["status"] == "ok":
+                # Process exited cleanly — release lock now.
+                _aqbanking_lock.release()
+            # "pending": lock stays held until complete_fetch() releases it.
+            return result
+        except Exception:
+            _aqbanking_lock.release()
+            raise
 
     def _drain_until_push_or_exit(self, timeout: float) -> dict:
         """Read stdout/stderr until the process exits or a push-TAN prompt appears.
@@ -288,6 +307,12 @@ class AqBankingClient:
             self._proc.kill()
             self._proc.communicate()
             raise RuntimeError(f"aqbanking-cli timed out after {timeout}s waiting for completion")
+        finally:
+            # Release the lock acquired in start_fetch() for the pending path.
+            try:
+                _aqbanking_lock.release()
+            except RuntimeError:
+                pass
         self._stdout_buf += remaining_out
         stderr_text = (self._stderr_buf + remaining_err).decode("utf-8", errors="replace").strip()
         if stderr_text:

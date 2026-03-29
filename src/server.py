@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests as _requests
 from flask import Flask, jsonify, render_template, request
-from aqbanking import AqBankingClient
+from aqbanking import AqBankingClient, _aqbanking_lock
 from config import load_config
 import setup as bank_setup
 import logging
@@ -98,6 +98,10 @@ def _start_pending_timeout(account_id: str, webhook_url: str) -> None:
 
 def _run_scheduled_sync() -> None:
     """Run sync for all enabled, connected accounts (called by scheduler thread)."""
+    if not _aqbanking_lock.acquire(timeout=5):
+        logger.warning("Scheduled sync skipped — aqbanking is busy (manual sync in progress?)")
+        return
+    _aqbanking_lock.release()
     logger.info("Running scheduled sync")
     sched_cfg = get_scheduler_config()
     webhook_url = sched_cfg.get("webhook_url", "")
