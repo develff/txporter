@@ -134,8 +134,9 @@ _PUSH_SIGNALS = (
 )
 
 # How long to wait for aqbanking-cli to connect to the bank and signal
-# whether a TAN is required.  Most banks respond within 5-15 seconds.
-_DRAIN_TIMEOUT = 30
+# whether a TAN is required.  Most banks respond within 5-15 seconds;
+# 90 s gives headroom for slow connections or large date ranges.
+_DRAIN_TIMEOUT = 90
 
 
 class AqBankingClient:
@@ -230,7 +231,17 @@ class AqBankingClient:
                 logger.info("Push-TAN prompt detected — returning pending")
                 return {"status": "pending"}
 
-        logger.warning("aqbanking-cli drain timed out after %.0fs — assuming push was sent", timeout)
+        logger.warning("aqbanking-cli drain timed out after %.0fs — unknown state", timeout)
+        stderr_so_far = self._stderr_buf.decode("utf-8", errors="replace").strip()
+        if stderr_so_far:
+            logger.info("aqbanking stderr at timeout:\n%s", stderr_so_far)
+        else:
+            logger.info("aqbanking stderr at timeout: (empty)")
+        push_seen = any(sig in (self._stdout_buf + self._stderr_buf) for sig in _PUSH_SIGNALS)
+        if push_seen:
+            logger.info("Push signal found in buffered output — treating as pending")
+        else:
+            logger.warning("No push signal in buffered output — TAN state unclear; returning pending anyway")
         return {"status": "pending"}
 
     def _drain_pipes(self):
@@ -251,18 +262,38 @@ class AqBankingClient:
                 else:
                     self._stderr_buf += chunk
 
-    def complete_fetch(self, timeout: int = 60) -> list:
+    def complete_fetch(self, timeout: int = 120) -> list:
         """Confirm push-TAN approval and collect transaction results.
 
-        Sends the approval signal to aqbanking-cli and waits for it to finish.
         Must only be called after start_fetch() returned {"status": "pending"}.
+
+        Only sends the "1\\n" approval signal to aqbanking-cli if a push-TAN
+        prompt was actually detected in the buffered output.  If the drain
+        timed out without seeing any push signal (aqbanking was still
+        connecting or no TAN is needed), we wait for the process to finish
+        naturally without sending any input — sending "1\\n" into a process
+        that isn't waiting for it produces wrong results.
         """
-        remaining_out, remaining_err = self._proc.communicate(input=b"1\n", timeout=timeout)
+        combined = self._stdout_buf + self._stderr_buf
+        push_seen = any(sig in combined for sig in _PUSH_SIGNALS)
+        if push_seen:
+            logger.info("complete_fetch: push signal in buffer — sending approval")
+            stdin_input = b"1\n"
+        else:
+            logger.info("complete_fetch: no push signal in buffer — waiting for process without input")
+            stdin_input = None
+        try:
+            remaining_out, remaining_err = self._proc.communicate(input=stdin_input, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            self._proc.kill()
+            self._proc.communicate()
+            raise RuntimeError(f"aqbanking-cli timed out after {timeout}s waiting for completion")
         self._stdout_buf += remaining_out
+        stderr_text = (self._stderr_buf + remaining_err).decode("utf-8", errors="replace").strip()
+        if stderr_text:
+            logger.info("aqbanking stderr:\n%s", stderr_text)
         if self._proc.returncode != 0:
-            raise RuntimeError(
-                f"aqbanking-cli failed: {remaining_err.decode('utf-8', errors='replace')}"
-            )
+            raise RuntimeError(f"aqbanking-cli failed (rc={self._proc.returncode}): {stderr_text}")
         return _parse_ctx(self._stdout_buf.decode("utf-8", errors="replace"))
 
     def _fetch_paypal(self, days: int) -> list:
