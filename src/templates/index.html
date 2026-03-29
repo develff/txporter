@@ -736,9 +736,10 @@ function openSyncModal(accountId) {
 
 async function startSync(accountId) {
   state.syncAccountId = accountId;
+  const body = buildSyncBody();
   showModal(syncWaitingScreen(accountId, false));
   try {
-    const r = await api("POST", `/sync/${accountId}`, buildSyncBody());
+    const r = await api("POST", `/sync/${accountId}`, body);
     if (r.status === "pending") {
       showModal(syncWaitingScreen(accountId, true));
     } else if (r.status === "ok") {
