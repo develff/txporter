@@ -16,9 +16,17 @@ from urllib.parse import unquote
 logger = logging.getLogger(__name__)
 
 # aqbanking-cli uses a file lock on its config directory, so only one process
-# can run at a time.  This lock serialises all invocations within the server
-# process and prevents the scheduler and manual syncs from conflicting.
-_aqbanking_lock = threading.Lock()
+# can run at a time.  We track the running process rather than holding a Lock
+# across two method calls, so a crashed/abandoned process never blocks future
+# syncs — if the process is dead, poll() is not None and we allow a new one.
+_running_proc: "subprocess.Popen | None" = None
+_running_proc_guard = threading.Lock()  # guards _running_proc only
+
+
+def aqbanking_is_busy() -> bool:
+    """Return True if an aqbanking-cli process is currently running."""
+    with _running_proc_guard:
+        return _running_proc is not None and _running_proc.poll() is None
 
 PINFILE = os.environ.get("TXPORTER_PINFILE", "/home/txporter/config/pinfile")
 
@@ -188,26 +196,30 @@ class AqBankingClient:
         if to_date:
             cmd.insert(-1, f"--todate={to_date.replace('-', '')}")
 
-        if not _aqbanking_lock.acquire(timeout=10):
-            raise RuntimeError(
-                "Another aqbanking-cli process is already running — please wait and retry"
-            )
-        try:
+        global _running_proc
+        with _running_proc_guard:
+            if _running_proc is not None and _running_proc.poll() is None:
+                raise RuntimeError(
+                    "Another aqbanking-cli process is already running — please wait and retry"
+                )
             logger.info("Running: %s", " ".join(cmd))
             self._proc = subprocess.Popen(
                 cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE
             )
             self._stdout_buf = b""
             self._stderr_buf = b""
+            _running_proc = self._proc
 
+        try:
             result = self._drain_until_push_or_exit(_DRAIN_TIMEOUT)
             if result["status"] == "ok":
-                # Process exited cleanly — release lock now.
-                _aqbanking_lock.release()
-            # "pending": lock stays held until complete_fetch() releases it.
+                with _running_proc_guard:
+                    _running_proc = None
+            # "pending": _running_proc stays set until complete_fetch() clears it.
             return result
         except Exception:
-            _aqbanking_lock.release()
+            with _running_proc_guard:
+                _running_proc = None
             raise
 
     def _drain_until_push_or_exit(self, timeout: float) -> dict:
@@ -301,6 +313,7 @@ class AqBankingClient:
         else:
             logger.info("complete_fetch: no push signal in buffer — waiting for process without input")
             stdin_input = None
+        global _running_proc
         try:
             remaining_out, remaining_err = self._proc.communicate(input=stdin_input, timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -308,11 +321,8 @@ class AqBankingClient:
             self._proc.communicate()
             raise RuntimeError(f"aqbanking-cli timed out after {timeout}s waiting for completion")
         finally:
-            # Release the lock acquired in start_fetch() for the pending path.
-            try:
-                _aqbanking_lock.release()
-            except RuntimeError:
-                pass
+            with _running_proc_guard:
+                _running_proc = None
         self._stdout_buf += remaining_out
         stderr_text = (self._stderr_buf + remaining_err).decode("utf-8", errors="replace").strip()
         if stderr_text:
