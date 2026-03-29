@@ -101,7 +101,6 @@ def _run_scheduled_sync() -> None:
     if aqbanking_is_busy():
         logger.warning("Scheduled sync skipped — aqbanking-cli already running")
         return
-    _aqbanking_lock.release()
     logger.info("Running scheduled sync")
     sched_cfg = get_scheduler_config()
     webhook_url = sched_cfg.get("webhook_url", "")

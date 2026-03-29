@@ -3,6 +3,7 @@ txporter - AqBanking CLI wrapper
 Fetches transactions from financial accounts using AqBanking.
 """
 
+import glob as _glob
 import os
 import re
 import select
@@ -14,6 +15,9 @@ from datetime import datetime, timedelta
 from urllib.parse import unquote
 
 logger = logging.getLogger(__name__)
+
+PINFILE = os.environ.get("TXPORTER_PINFILE", "/home/txporter/config/pinfile")
+_AQBANKING_DIR = os.path.expanduser("~/.aqbanking")
 
 # aqbanking-cli uses a file lock on its config directory, so only one process
 # can run at a time.  We track the running process rather than holding a Lock
@@ -28,7 +32,21 @@ def aqbanking_is_busy() -> bool:
     with _running_proc_guard:
         return _running_proc is not None and _running_proc.poll() is None
 
-PINFILE = os.environ.get("TXPORTER_PINFILE", "/home/txporter/config/pinfile")
+
+def _clear_stale_locks() -> None:
+    """Remove gwenhywfar .lck files left by previously crashed aqbanking-cli processes.
+
+    Only call this when no aqbanking process is running (already guaranteed by
+    the _running_proc check in start_fetch).  In Docker, PIDs are frequently
+    reused, so gwenhywfar can mistake a live unrelated process for the original
+    lock holder and refuse to start for up to ~2 minutes.
+    """
+    for lck in _glob.glob(os.path.join(_AQBANKING_DIR, "**", "*.lck"), recursive=True):
+        try:
+            os.remove(lck)
+            logger.info("Removed stale aqbanking lock file: %s", lck)
+        except OSError as e:
+            logger.warning("Could not remove stale lock file %s: %s", lck, e)
 
 
 def _decode_amount_eur(raw: str) -> tuple[float, str]:
@@ -186,6 +204,7 @@ class AqBankingClient:
         account_id = str(self.account["aqbanking_id"])
 
         cmd = [
+            "stdbuf", "-o0",   # force unbuffered stdout so push prompts are visible immediately
             "aqbanking-cli",
             f"--pinfile={PINFILE}",
             "request",
@@ -202,6 +221,7 @@ class AqBankingClient:
                 raise RuntimeError(
                     "Another aqbanking-cli process is already running — please wait and retry"
                 )
+            _clear_stale_locks()
             logger.info("Running: %s", " ".join(cmd))
             self._proc = subprocess.Popen(
                 cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE
