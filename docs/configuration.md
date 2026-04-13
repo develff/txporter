@@ -108,3 +108,60 @@ The PIN file path can be overridden with the `TXPORTER_PINFILE` environment vari
 | `/sync/{id}` | POST | Start sync for one account (FinTS: returns `pending`, confirm in app) |
 | `/sync/{id}/confirm` | POST | Complete a pending FinTS sync after TAN confirmation |
 | `/status` | GET | Last sync status |
+| `/tags` | GET | List all tag names from Firefly III |
+| `/csv/fields` | GET | List all Firefly fields available for CSV column mapping |
+| `/csv/preview` | POST | Upload a CSV file and return headers + first 5 rows (form: `file`, `delimiter`, `encoding`, `skip_rows`) |
+| `/csv/import` | POST | Import a CSV file using a mapping profile (form: `file`, `mapping` as JSON string) |
+| `/csv/mappings` | GET | List all saved CSV mapping profiles |
+| `/csv/mappings` | POST | Save or update a CSV mapping profile (body: JSON with `id` and `name`) |
+| `/csv/mappings/{id}` | DELETE | Delete a CSV mapping profile by id |
+
+## CSV Import
+
+CSV import allows importing transactions from any CSV file (e.g. Crypto.com, PayPal export) into Firefly III without a FinTS connection.
+
+### Mapping profiles
+
+A mapping profile defines how CSV columns map to Firefly III transaction fields. Profiles are saved in `config/csv_mappings.json`.
+
+```json
+{
+  "id": "crypto-com-visa",
+  "name": "Crypto.com Visa",
+  "delimiter": ",",
+  "encoding": "utf-8",
+  "skip_rows": 0,
+  "account_name": "Crypto.com Visa",
+  "fields": {
+    "date":                  { "column": "Timestamp (UTC)", "date_format": "%Y-%m-%d %H:%M:%S" },
+    "amount":                { "column": "Amount" },
+    "currency_code":         { "column": "Currency" },
+    "description":           { "column": "Transaction Description" },
+    "foreign_amount":        { "column": "To Amount" },
+    "foreign_currency_code": { "column": "To Currency" },
+    "tags":                  { "value": "CDC-CSV" }
+  }
+}
+```
+
+Each field can be mapped either from a CSV column (`"column": "ColName"`) or set to a fixed value (`"value": "..."`) that applies to every row.
+
+Required fields: `date`, `amount`, `currency_code`, `description`.
+
+### Date format
+
+Use Python `strptime` format strings, e.g. `%Y-%m-%d %H:%M:%S` for `2024-01-15 09:23:41`.
+
+### Amount format
+
+For European number formats set `decimal_sep` and `thousands_sep`:
+
+```json
+"amount": { "column": "Betrag", "decimal_sep": ",", "thousands_sep": "." }
+```
+
+### Environment variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TXPORTER_CSV_MAPPINGS` | `<config_dir>/csv_mappings.json` | Path to CSV mapping profiles file |

@@ -353,6 +353,92 @@
     .tan-mode-item input[type=radio] { accent-color: var(--primary); }
     .tan-mode-desc { font-size: 13px; }
     .tan-mode-id { font-size: 11px; color: var(--text-muted); margin-top: 1px; }
+
+    /* ── Tab navigation ── */
+    .tab-nav {
+      display: flex;
+      gap: 0;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 20px;
+    }
+    .tab-btn {
+      background: none;
+      border: none;
+      border-radius: 0;
+      border-bottom: 2px solid transparent;
+      padding: 8px 16px;
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--text-muted);
+      margin-bottom: -1px;
+      cursor: pointer;
+      transition: color .15s, border-color .15s;
+    }
+    .tab-btn:hover { color: var(--text); }
+    .tab-btn.active { color: var(--primary); border-bottom-color: var(--primary); }
+
+    /* ── CSV tab ── */
+    .csv-mapping-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 14px 18px;
+      margin-bottom: 10px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+    .csv-mapping-card .card-body { flex: 1; min-width: 0; }
+    .csv-mapping-card .card-name { font-weight: 600; font-size: 15px; }
+    .csv-mapping-card .card-meta { color: var(--text-muted); font-size: 12px; margin-top: 3px; }
+
+    /* ── CSV preview table ── */
+    .csv-preview-wrap { overflow-x: auto; margin-top: 12px; max-height: 220px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius); }
+    .csv-preview-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .csv-preview-table th { background: #f8fafc; padding: 6px 10px; text-align: left; border-bottom: 1px solid var(--border); font-weight: 600; white-space: nowrap; position: sticky; top: 0; }
+    .csv-preview-table td { padding: 5px 10px; border-bottom: 1px solid #f0f2f5; white-space: nowrap; max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
+
+    /* ── Field mapping rows ── */
+    .field-map-row { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 10px; }
+    .field-map-label { flex: 0 0 160px; font-size: 13px; padding-top: 9px; }
+    .field-map-label .req { color: var(--danger); margin-left: 2px; }
+    .field-map-controls { flex: 1; display: flex; flex-direction: column; gap: 6px; }
+    .field-map-opts { display: flex; gap: 8px; flex-wrap: wrap; }
+    .field-map-opts input[type=text] { flex: 1; min-width: 100px; padding: 6px 8px; font-size: 12px; }
+    .field-map-opts select { flex: 1; min-width: 100px; padding: 6px 8px; font-size: 12px; }
+    .field-map-mode { display: flex; gap: 6px; }
+    .field-map-mode label { font-size: 12px; font-weight: 400; text-transform: none; letter-spacing: 0; display: flex; align-items: center; gap: 4px; color: var(--text-muted); cursor: pointer; }
+    .field-map-mode input[type=radio] { accent-color: var(--primary); }
+
+    /* ── Larger modal for field mapping ── */
+    .modal-box.modal-wide { max-width: 620px; }
+
+    /* ── Tag chips widget ── */
+    .csv-tags-chips { display: flex; flex-wrap: wrap; gap: 4px; min-height: 24px; }
+    .csv-tag-chip { display: inline-flex; align-items: center; gap: 3px; background: var(--primary); color: #fff; border-radius: 10px; padding: 2px 10px 2px 10px; font-size: 12px; }
+    .csv-tag-chip button { background: none; border: none; color: #fff; cursor: pointer; font-size: 14px; padding: 0 0 0 4px; line-height: 1; opacity: .75; }
+    .csv-tag-chip button:hover { opacity: 1; }
+    .csv-tags-free { width: 100%; padding: 5px 8px; font-size: 12px; margin-top: 6px; box-sizing: border-box; }
+    .csv-tags-available { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+    .csv-tags-avail-chip { background: #f1f5f9; border: 1px solid var(--border); border-radius: 10px; padding: 2px 9px; font-size: 12px; cursor: pointer; color: var(--text-muted); transition: background .1s, color .1s; }
+    .csv-tags-avail-chip:hover { background: #e0eaff; border-color: var(--primary); color: var(--primary); }
+    .csv-tags-avail-chip.used { opacity: .3; cursor: default; pointer-events: none; }
+
+    /* ── Drop zone ── */
+    .drop-zone {
+      border: 2px dashed var(--border);
+      border-radius: var(--radius);
+      padding: 28px 16px;
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 13px;
+      cursor: pointer;
+      transition: border-color .15s, background .15s;
+    }
+    .drop-zone:hover, .drop-zone.drag-over { border-color: var(--primary); background: #eff6ff; color: var(--primary); }
+    .drop-zone input[type=file] { display: none; }
+    .drop-zone-filename { font-weight: 600; color: var(--text); margin-top: 4px; }
   </style>
 </head>
 <body>
@@ -373,8 +459,19 @@
 </header>
 
 <main>
-  <div id="accounts-container">
-    <div class="empty"><div class="spinner"></div></div>
+  <nav class="tab-nav">
+    <button class="tab-btn active" id="tab-btn-accounts" onclick="showTab('accounts')">Accounts</button>
+    <button class="tab-btn" id="tab-btn-csv" onclick="showTab('csv')">CSV Import</button>
+  </nav>
+  <div id="tab-accounts">
+    <div id="accounts-container">
+      <div class="empty"><div class="spinner"></div></div>
+    </div>
+  </div>
+  <div id="tab-csv" style="display:none">
+    <div id="csv-container">
+      <div class="empty"><div class="spinner"></div></div>
+    </div>
   </div>
 </main>
 
@@ -1639,6 +1736,584 @@ function formatDate(iso) {
   return isNaN(d) ? iso : d.toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" });
 }
 
+// ── Tab navigation ─────────────────────────────────────────────────────────────
+function showTab(name) {
+  ["accounts", "csv"].forEach(t => {
+    document.getElementById(`tab-${t}`).style.display = t === name ? "" : "none";
+    document.getElementById(`tab-btn-${t}`).classList.toggle("active", t === name);
+  });
+  if (name === "csv") loadCsvMappings();
+}
+
+// ── CSV state ──────────────────────────────────────────────────────────────────
+const csvState = {
+  mappings: [],
+  fields: [],       // FIREFLY_FIELDS from server
+  availableTags: [],
+  previewHeaders: [],
+  previewRows: [],
+  wizardFile: null,
+  wizardStep: 1,    // 1=configure, 2=map, 3=save
+  _selectedTags: [],
+};
+
+async function loadCsvFields() {
+  if (csvState.fields.length) return;
+  try { csvState.fields = await api("GET", "/csv/fields"); } catch (_) {}
+  api("GET", "/tags").then(t => { csvState.availableTags = t || []; }).catch(() => {});
+}
+
+async function loadCsvMappings() {
+  await loadCsvFields();
+  try { csvState.mappings = await api("GET", "/csv/mappings"); } catch (_) { csvState.mappings = []; }
+  renderCsvMappings();
+}
+
+function renderCsvMappings() {
+  const el = document.getElementById("csv-container");
+  const cards = csvState.mappings.map(m => `
+    <div class="csv-mapping-card">
+      <div class="card-body">
+        <div class="card-name">${esc(m.name)}</div>
+        <div class="card-meta">
+          account: ${esc(m.account_name || "—")}
+          &nbsp;·&nbsp; delimiter: <code>${esc(m.delimiter || ",")}</code>
+          &nbsp;·&nbsp; encoding: ${esc(m.encoding || "utf-8")}
+        </div>
+      </div>
+      <div class="card-actions">
+        <button class="btn-primary btn-sm" onclick="openCsvImportModal(${esc(JSON.stringify(m.id))})">Import CSV</button>
+        <button class="btn-secondary btn-sm" onclick="openCsvEditWizard(${esc(JSON.stringify(m.id))})">Edit</button>
+        <button class="btn-danger btn-sm" onclick="deleteCsvMapping(${esc(JSON.stringify(m.id))})">Delete</button>
+      </div>
+    </div>`).join("");
+
+  el.innerHTML = `
+    <div style="display:flex;justify-content:flex-end;margin-bottom:14px">
+      <button class="btn-primary" onclick="openCsvNewWizard()">+ New Mapping</button>
+    </div>
+    ${csvState.mappings.length ? cards : '<div class="empty"><p>No mappings yet.</p><p>Create a mapping to import transactions from a CSV file.</p></div>'}`;
+}
+
+// ── Quick import: pick file and run against an existing mapping ────────────────
+function openCsvImportModal(mappingId) {
+  const m = csvState.mappings.find(x => x.id === mappingId);
+  if (!m) return;
+  showModal(`
+    <div class="modal-header">
+      <div><div class="modal-title">Import CSV</div>
+        <div class="modal-subtitle">${esc(m.name)}</div></div>
+      <button class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label>CSV File</label>
+        <div class="drop-zone" id="csv-quick-drop" onclick="document.getElementById('csv-quick-file').click()"
+             ondragover="event.preventDefault();this.classList.add('drag-over')"
+             ondragleave="this.classList.remove('drag-over')"
+             ondrop="csvQuickDrop(event)">
+          <input type="file" id="csv-quick-file" accept=".csv,.txt" onchange="csvQuickFileChange(event)">
+          <div>Drop CSV file here or click to browse</div>
+          <div class="drop-zone-filename" id="csv-quick-filename"></div>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn-primary" id="btn-csv-quick-import" disabled onclick="runCsvImport('${esc(mappingId)}')">Import</button>
+    </div>`);
+}
+
+function csvQuickDrop(e) {
+  e.preventDefault();
+  e.currentTarget.classList.remove("drag-over");
+  const file = e.dataTransfer.files[0];
+  if (file) _setCsvQuickFile(file);
+}
+function csvQuickFileChange(e) {
+  if (e.target.files[0]) _setCsvQuickFile(e.target.files[0]);
+}
+function _setCsvQuickFile(file) {
+  csvState.wizardFile = file;
+  document.getElementById("csv-quick-filename").textContent = file.name;
+  const btn = document.getElementById("btn-csv-quick-import");
+  if (btn) btn.disabled = false;
+}
+
+async function runCsvImport(mappingId) {
+  const m = csvState.mappings.find(x => x.id === mappingId);
+  if (!m || !csvState.wizardFile) return;
+  setModalLoading(true);
+  const fd = new FormData();
+  fd.append("file", csvState.wizardFile);
+  fd.append("mapping", JSON.stringify(m));
+  try {
+    const r = await fetch("/csv/import", { method: "POST", body: fd });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+    const imported = data.imported ?? data.found ?? 0;
+    const skipped  = data.skipped  ?? 0;
+    showModal(`
+      <div class="modal-header">
+        <div><div class="modal-title">Import complete</div></div>
+        <button class="modal-close" onclick="closeModal()">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="success-screen">
+          <div class="icon">✅</div>
+          <h3>${imported} transaction${imported !== 1 ? "s" : ""} imported</h3>
+          <p>${data.found ?? 0} found · ${imported} imported · ${skipped} skipped (duplicates)</p>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-primary" onclick="closeModal()">Done</button>
+      </div>`);
+  } catch (e) {
+    setModalLoading(false);
+    prependAlert("alert-error", e.message);
+  }
+}
+
+async function deleteCsvMapping(mappingId) {
+  if (!confirm("Delete this mapping?")) return;
+  try {
+    await api("DELETE", `/csv/mappings/${encodeURIComponent(mappingId)}`);
+    await loadCsvMappings();
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+// ── New / Edit mapping wizard ──────────────────────────────────────────────────
+function openCsvNewWizard() {
+  csvState.wizardFile = null;
+  csvState.previewHeaders = [];
+  csvState.previewRows = [];
+  _csvWizardStep1(null);
+}
+
+function openCsvEditWizard(mappingId) {
+  const m = csvState.mappings.find(x => x.id === mappingId);
+  if (!m) return;
+  csvState.wizardFile = null;
+  csvState.previewHeaders = [];
+  csvState.previewRows = [];
+  _csvWizardStep1(m);
+}
+
+function _csvWizardProgress(step) {
+  const steps = ["Configure", "Map Fields", "Save"];
+  return `<div class="wizard-steps">${steps.map((s, i) =>
+    `<div class="wizard-step ${i < step ? "done" : i === step ? "active" : ""}">${s}</div>`
+  ).join("")}</div>`;
+}
+
+function _csvWizardStep1(existing) {
+  csvState._wizardExisting = existing;
+  const d = existing || {};
+  showModal(`
+    <div class="modal-header">
+      <div><div class="modal-title">${existing ? "Edit Mapping" : "New Mapping"}</div>
+        <div class="modal-subtitle">Step 1 — Upload & configure</div></div>
+      <button class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    ${_csvWizardProgress(0)}
+    <div class="modal-body" style="max-height:70vh;overflow-y:auto">
+      <div class="form-group">
+        <label>CSV File ${existing ? "(optional — skip to keep existing mapping)" : ""}</label>
+        <div class="drop-zone" id="csv-wiz-drop"
+             onclick="document.getElementById('csv-wiz-file').click()"
+             ondragover="event.preventDefault();this.classList.add('drag-over')"
+             ondragleave="this.classList.remove('drag-over')"
+             ondrop="csvWizDrop(event)">
+          <input type="file" id="csv-wiz-file" accept=".csv,.txt" onchange="csvWizFileChange(event)">
+          <div>Drop CSV file here or click to browse</div>
+          <div class="drop-zone-filename" id="csv-wiz-filename">${csvState.wizardFile ? esc(csvState.wizardFile.name) : ""}</div>
+        </div>
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <div class="form-group" style="flex:1;min-width:100px">
+          <label>Delimiter</label>
+          <select id="csv-wiz-delim">
+            <option value="," ${(d.delimiter||",")===","?"selected":""}>Comma (,)</option>
+            <option value=";" ${d.delimiter===";"?"selected":""}>Semicolon (;)</option>
+            <option value="\t" ${d.delimiter==="\t"?"selected":""}>Tab</option>
+            <option value="|" ${d.delimiter==="|"?"selected":""}>Pipe (|)</option>
+          </select>
+        </div>
+        <div class="form-group" style="flex:1;min-width:100px">
+          <label>Encoding</label>
+          <select id="csv-wiz-enc">
+            <option value="utf-8" ${(d.encoding||"utf-8")==="utf-8"?"selected":""}>UTF-8</option>
+            <option value="latin-1" ${d.encoding==="latin-1"?"selected":""}>Latin-1</option>
+            <option value="cp1252" ${d.encoding==="cp1252"?"selected":""}>Windows-1252</option>
+          </select>
+        </div>
+        <div class="form-group" style="flex:0 0 90px">
+          <label>Skip rows</label>
+          <input type="text" id="csv-wiz-skip" value="${d.skip_rows ?? 0}" style="width:100%">
+        </div>
+      </div>
+      <button class="btn-secondary btn-sm" onclick="csvWizPreview()">Preview →</button>
+      <div id="csv-wiz-preview"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn-primary" onclick="csvWizToStep2()">Next →</button>
+    </div>`);
+
+  // Widen the modal for this step
+  document.getElementById("modal-box").classList.add("modal-wide");
+}
+
+function csvWizDrop(e) {
+  e.preventDefault();
+  e.currentTarget.classList.remove("drag-over");
+  const file = e.dataTransfer.files[0];
+  if (file) _setCsvWizFile(file);
+}
+function csvWizFileChange(e) {
+  if (e.target.files[0]) _setCsvWizFile(e.target.files[0]);
+}
+function _setCsvWizFile(file) {
+  csvState.wizardFile = file;
+  const el = document.getElementById("csv-wiz-filename");
+  if (el) el.textContent = file.name;
+}
+
+async function csvWizPreview() {
+  if (!csvState.wizardFile) { prependAlert("alert-warn", "Please select a file first."); return; }
+  const fd = new FormData();
+  fd.append("file", csvState.wizardFile);
+  fd.append("delimiter", document.getElementById("csv-wiz-delim").value);
+  fd.append("encoding",  document.getElementById("csv-wiz-enc").value);
+  fd.append("skip_rows", document.getElementById("csv-wiz-skip").value);
+  const previewDiv = document.getElementById("csv-wiz-preview");
+  previewDiv.innerHTML = `<div style="padding:8px 0"><span class="spinner"></span></div>`;
+  try {
+    const r = await fetch("/csv/preview", { method: "POST", body: fd });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+    csvState.previewHeaders = data.headers;
+    csvState.previewRows = data.rows;
+    previewDiv.innerHTML = _csvPreviewTable(data.headers, data.rows);
+  } catch (e) {
+    previewDiv.innerHTML = `<div class="alert alert-error">${esc(e.message)}</div>`;
+  }
+}
+
+function _csvPreviewTable(headers, rows) {
+  if (!headers.length) return `<div class="alert alert-warn" style="margin-top:10px">No columns found. Check delimiter / skip_rows.</div>`;
+  const ths = headers.map(h => `<th>${esc(h)}</th>`).join("");
+  const trs = rows.map(r => `<tr>${headers.map(h => `<td>${esc(r[h] ?? "")}</td>`).join("")}</tr>`).join("");
+  return `<div class="csv-preview-wrap"><table class="csv-preview-table"><thead><tr>${ths}</tr></thead><tbody>${trs}</tbody></table></div>`;
+}
+
+async function csvWizToStep2() {
+  const existing = csvState._wizardExisting;
+  // If no file uploaded yet and editing, allow passing through with existing headers empty
+  if (csvState.wizardFile && !csvState.previewHeaders.length) {
+    await csvWizPreview();
+    if (!csvState.previewHeaders.length) return; // preview failed
+  }
+  const delim   = document.getElementById("csv-wiz-delim").value;
+  const enc     = document.getElementById("csv-wiz-enc").value;
+  const skip    = document.getElementById("csv-wiz-skip").value;
+
+  // Store format settings on state for step 3
+  csvState._step1 = { delimiter: delim, encoding: enc, skip_rows: parseInt(skip) || 0 };
+
+  _csvWizardStep2(existing);
+}
+
+function _csvWizardStep2(existing) {
+  const d = existing || {};
+  const prevFields = d.fields || {};
+  // If no file was uploaded (edit without re-upload), fall back to the column
+  // names already stored in the existing mapping so dropdowns stay populated.
+  const headers = csvState.previewHeaders.length
+    ? csvState.previewHeaders
+    : [...new Set(Object.values(prevFields).map(f => f.column).filter(Boolean))];
+  const colOpts = `<option value="">-- skip --</option>` +
+    headers.map(h => `<option value="${esc(h)}">${esc(h)}</option>`).join("");
+
+  const fieldRows = csvState.fields.map(f => {
+    const fc = prevFields[f.id] || {};
+    const hasVal  = "value" in fc;
+    const mode    = hasVal ? "fixed" : "column";
+    const selCol  = fc.column || "";
+    const fixVal  = fc.value  || "";
+
+    let extras = "";
+    if (f.transform === "date") {
+      extras = `<input type="text" placeholder="Date format, e.g. %Y-%m-%d %H:%M:%S"
+                  id="csv-ff-${f.id}-fmt" value="${esc(fc.date_format || "")}" style="flex:1;min-width:140px">`;
+    } else if (f.transform === "amount") {
+      extras = `
+        <input type="text" placeholder="Dec sep (default .)" id="csv-ff-${f.id}-dec"
+               value="${esc(fc.decimal_sep || "")}" style="width:80px">
+        <input type="text" placeholder="Thousands sep" id="csv-ff-${f.id}-thou"
+               value="${esc(fc.thousands_sep || "")}" style="width:90px">`;
+    }
+
+    // Tags field gets a chip-selector widget instead of a plain text input.
+    const fixedInput = f.id === "tags"
+      ? `<input type="hidden" id="csv-ff-tags-val" value="${esc(fixVal)}">
+         <div id="csv-tags-widget" style="${mode==="column"?"display:none":""}">
+           <div class="csv-tags-chips" id="csv-tags-chips"></div>
+           <input type="text" class="csv-tags-free" id="csv-tags-free"
+                  placeholder="Type and press Enter to add a tag"
+                  autocomplete="off" onkeydown="csvTagsKeydown(event)">
+           <div class="csv-tags-available" id="csv-tags-available"></div>
+         </div>`
+      : `<input type="text" id="csv-ff-${f.id}-val" placeholder="Fixed value"
+                value="${esc(fixVal)}" style="${mode==="column"?"display:none":""}">`;
+
+    return `
+      <div class="field-map-row">
+        <div class="field-map-label">${esc(f.label)}${f.required ? '<span class="req">★</span>' : ""}</div>
+        <div class="field-map-controls">
+          <div class="field-map-mode">
+            <label><input type="radio" name="csv-mode-${f.id}" value="column" ${mode==="column"?"checked":""} onchange="csvToggleMode('${f.id}','column')"> Column</label>
+            <label><input type="radio" name="csv-mode-${f.id}" value="fixed"  ${mode==="fixed" ?"checked":""} onchange="csvToggleMode('${f.id}','fixed')"> Fixed value</label>
+          </div>
+          <div class="field-map-opts" id="csv-opts-${f.id}">
+            <select id="csv-ff-${f.id}-col" style="${mode==="fixed"?"display:none":""}"
+                    onchange="csvColChanged('${f.id}')">
+              ${colOpts.replace(`value="${esc(selCol)}"`, `value="${esc(selCol)}" selected`)}
+            </select>
+            ${fixedInput}
+            ${extras}
+          </div>
+        </div>
+      </div>`;
+  }).join("");
+
+  showModal(`
+    <div class="modal-header">
+      <div><div class="modal-title">${existing ? "Edit Mapping" : "New Mapping"}</div>
+        <div class="modal-subtitle">Step 2 — Map fields</div></div>
+      <button class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    ${_csvWizardProgress(1)}
+    <div class="modal-body" style="max-height:65vh;overflow-y:auto">
+      <div class="form-group">
+        <label>Firefly Asset Account Name</label>
+        <input type="text" id="csv-wiz-account" placeholder="e.g. Crypto.com Visa"
+               value="${esc(d.account_name || "")}">
+      </div>
+      ${fieldRows}
+    </div>
+    <div class="modal-footer">
+      <button class="btn-secondary" onclick="_csvWizardStep1(csvState._wizardExisting)">← Back</button>
+      <button class="btn-primary" onclick="csvWizToStep3()">Next →</button>
+    </div>`);
+
+  document.getElementById("modal-box").classList.add("modal-wide");
+  if (document.getElementById("csv-tags-widget")) csvTagsInit();
+}
+
+function csvToggleMode(fieldId, mode) {
+  const col    = document.getElementById(`csv-ff-${fieldId}-col`);
+  const val    = document.getElementById(`csv-ff-${fieldId}-val`);
+  const widget = document.getElementById("csv-tags-widget");
+  if (col) col.style.display = mode === "fixed" ? "none" : "";
+  if (fieldId === "tags" && widget) {
+    widget.style.display = mode === "column" ? "none" : "";
+  } else if (val) {
+    val.style.display = mode === "column" ? "none" : "";
+  }
+}
+
+function csvColChanged(fieldId) {
+  // nothing extra needed — select value is read at save time
+}
+
+// ── Tag chip widget ────────────────────────────────────────────────────────────
+function csvTagsInit() {
+  const hidden = document.getElementById("csv-ff-tags-val");
+  const raw = hidden ? hidden.value : "";
+  csvState._selectedTags = raw ? raw.split(",").map(t => t.trim()).filter(Boolean) : [];
+  csvTagsRenderChips();
+  csvTagsRenderAvailable("");
+}
+
+function csvTagsRenderChips() {
+  const el = document.getElementById("csv-tags-chips");
+  if (!el) return;
+  el.innerHTML = csvState._selectedTags.map(t =>
+    `<span class="csv-tag-chip">${esc(t)}<button type="button" onclick="csvTagsRemove(${esc(JSON.stringify(t))})" title="Remove">×</button></span>`
+  ).join("");
+}
+
+function csvTagsRenderAvailable(query) {
+  const el = document.getElementById("csv-tags-available");
+  if (!el) return;
+  const q = query.toLowerCase();
+  const filtered = csvState.availableTags.filter(t =>
+    !q || t.toLowerCase().includes(q)
+  );
+  el.innerHTML = filtered.map(t => {
+    const used = csvState._selectedTags.includes(t);
+    return `<span class="csv-tags-avail-chip${used ? " used" : ""}" onclick="csvTagsAdd(${esc(JSON.stringify(t))})">${esc(t)}</span>`;
+  }).join("");
+}
+
+function csvTagsAdd(tag) {
+  tag = tag.trim();
+  if (!tag || csvState._selectedTags.includes(tag)) return;
+  csvState._selectedTags.push(tag);
+  csvTagsSync();
+}
+
+function csvTagsRemove(tag) {
+  csvState._selectedTags = csvState._selectedTags.filter(t => t !== tag);
+  csvTagsSync();
+}
+
+function csvTagsSync() {
+  const hidden = document.getElementById("csv-ff-tags-val");
+  if (hidden) hidden.value = csvState._selectedTags.join(",");
+  const free = document.getElementById("csv-tags-free");
+  csvTagsRenderChips();
+  csvTagsRenderAvailable(free ? free.value : "");
+}
+
+function csvTagsKeydown(event) {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    const val = event.target.value.trim();
+    if (val) {
+      // Support comma-separated input
+      val.split(",").forEach(t => csvTagsAdd(t.trim()));
+      event.target.value = "";
+      csvTagsRenderAvailable("");
+    }
+  } else {
+    // Filter available tags as user types
+    setTimeout(() => csvTagsRenderAvailable(event.target.value), 0);
+  }
+}
+
+function _collectFieldMapping() {
+  const result = {};
+  for (const f of csvState.fields) {
+    const modeEl = document.querySelector(`input[name="csv-mode-${f.id}"]:checked`);
+    const mode   = modeEl ? modeEl.value : "column";
+    if (mode === "fixed") {
+      const val = (document.getElementById(`csv-ff-${f.id}-val`) || {}).value || "";
+      if (val) result[f.id] = { value: val };
+    } else {
+      const col = (document.getElementById(`csv-ff-${f.id}-col`) || {}).value || "";
+      if (!col) continue;
+      const cfg = { column: col };
+      const fmtEl  = document.getElementById(`csv-ff-${f.id}-fmt`);
+      const decEl  = document.getElementById(`csv-ff-${f.id}-dec`);
+      const thouEl = document.getElementById(`csv-ff-${f.id}-thou`);
+      if (fmtEl  && fmtEl.value)  cfg.date_format   = fmtEl.value;
+      if (decEl  && decEl.value)  cfg.decimal_sep   = decEl.value;
+      if (thouEl && thouEl.value) cfg.thousands_sep = thouEl.value;
+      result[f.id] = cfg;
+    }
+  }
+  return result;
+}
+
+function csvWizToStep3() {
+  const existing = csvState._wizardExisting;
+  const d = existing || {};
+  const fields = _collectFieldMapping();
+  const account = (document.getElementById("csv-wiz-account") || {}).value || "";
+
+  // Validate required fields
+  const missing = csvState.fields.filter(f => f.required && !fields[f.id]);
+  if (missing.length) {
+    prependAlert("alert-error", `Required fields not mapped: ${missing.map(f => f.label).join(", ")}`);
+    return;
+  }
+
+  csvState._step2 = { fields, account_name: account };
+  _csvWizardStep3(existing);
+}
+
+function _csvWizardStep3(existing) {
+  const d = existing || {};
+  // Auto-generate id from name
+  const suggestedId = d.id || "";
+  const suggestedName = d.name || "";
+
+  showModal(`
+    <div class="modal-header">
+      <div><div class="modal-title">${existing ? "Edit Mapping" : "New Mapping"}</div>
+        <div class="modal-subtitle">Step 3 — Save</div></div>
+      <button class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    ${_csvWizardProgress(2)}
+    <div class="modal-body">
+      <div class="form-group">
+        <label>Mapping Name</label>
+        <input type="text" id="csv-wiz-name" placeholder="e.g. Crypto.com Visa"
+               value="${esc(suggestedName)}" oninput="csvAutoId()">
+      </div>
+      <div class="form-group">
+        <label>Mapping ID</label>
+        <input type="text" id="csv-wiz-id" placeholder="e.g. crypto-com-visa"
+               value="${esc(suggestedId)}">
+      </div>
+      <div class="form-group">
+        <label style="display:flex;align-items:center;gap:8px;font-size:13px;text-transform:none;letter-spacing:0;font-weight:400">
+          <input type="checkbox" id="csv-wiz-import-now" ${csvState.wizardFile ? "checked" : "disabled"}>
+          Import the uploaded file now
+        </label>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-secondary" onclick="csvWizToStep2()">← Back</button>
+      <button class="btn-primary" onclick="csvWizSave()">Save mapping</button>
+    </div>`);
+
+  document.getElementById("modal-box").classList.add("modal-wide");
+}
+
+function csvAutoId() {
+  const nameEl = document.getElementById("csv-wiz-name");
+  const idEl   = document.getElementById("csv-wiz-id");
+  if (!nameEl || !idEl) return;
+  idEl.value = nameEl.value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+}
+
+async function csvWizSave() {
+  const name = (document.getElementById("csv-wiz-name") || {}).value || "";
+  const id   = (document.getElementById("csv-wiz-id")   || {}).value || "";
+  if (!name || !id) { prependAlert("alert-error", "Name and ID are required."); return; }
+
+  const importNow = (document.getElementById("csv-wiz-import-now") || {}).checked;
+
+  const mapping = {
+    id,
+    name,
+    ...csvState._step1,
+    account_name: csvState._step2.account_name,
+    fields: csvState._step2.fields,
+  };
+
+  setModalLoading(true);
+  try {
+    await api("POST", "/csv/mappings", mapping);
+    await loadCsvMappings();
+    if (importNow && csvState.wizardFile) {
+      // Reload mappings first so the new mapping is in state
+      csvState.mappings = await api("GET", "/csv/mappings");
+      await runCsvImport(id);
+      return;
+    }
+    closeModal();
+  } catch (e) {
+    setModalLoading(false);
+    prependAlert("alert-error", e.message);
+  }
+}
+
 // ── Close modal on backdrop click ─────────────────────────────────────────────
 document.getElementById("modal").addEventListener("click", function(e) {
   if (e.target === this) closeModal();
@@ -1656,6 +2331,8 @@ async function init() {
     state.schedulerEnabled = sched.enabled;
     updateSchedulerIndicator(sched.enabled, sched.time);
   } catch (_) {}
+  // Pre-load fields list in background so CSV tab is instant
+  loadCsvFields().catch(() => {});
 }
 
 init();

@@ -274,6 +274,52 @@ class TestDedupStartDate:
         assert "start" not in call_params
 
 
+class TestGetTags:
+    def _mock_get(self, pages):
+        """Build a side_effect list for requests.get from a list of tag-name pages."""
+        responses = []
+        total = len(pages)
+        for i, tags in enumerate(pages):
+            mock_resp = MagicMock()
+            mock_resp.ok = True
+            mock_resp.json.return_value = {
+                "data": [{"attributes": {"tag": t}} for t in tags],
+                "meta": {"pagination": {"total_pages": total}},
+            }
+            responses.append(mock_resp)
+        return responses
+
+    def test_returns_sorted_tags(self):
+        client = FireflyClient(CONFIG)
+        with patch("src.firefly.requests.get", side_effect=self._mock_get([["Zebra", "Alpha", "Mitte"]])):
+            tags = client.get_tags()
+        assert tags == ["Alpha", "Mitte", "Zebra"]
+
+    def test_paginates_multiple_pages(self):
+        client = FireflyClient(CONFIG)
+        with patch("src.firefly.requests.get", side_effect=self._mock_get([["A", "B"], ["C"]])):
+            tags = client.get_tags()
+        assert sorted(tags) == ["A", "B", "C"]
+
+    def test_returns_empty_on_api_error(self):
+        client = FireflyClient(CONFIG)
+        mock_resp = MagicMock()
+        mock_resp.ok = False
+        with patch("src.firefly.requests.get", return_value=mock_resp):
+            assert client.get_tags() == []
+
+    def test_skips_entries_without_tag_attribute(self):
+        client = FireflyClient(CONFIG)
+        mock_resp = MagicMock()
+        mock_resp.ok = True
+        mock_resp.json.return_value = {
+            "data": [{"attributes": {"tag": "Good"}}, {"attributes": {}}],
+            "meta": {"pagination": {"total_pages": 1}},
+        }
+        with patch("src.firefly.requests.get", return_value=mock_resp):
+            assert client.get_tags() == ["Good"]
+
+
 class TestIsoDate:
     def test_converts_yyyymmdd_to_iso(self):
         assert _iso_date("20250401") == "2025-04-01"

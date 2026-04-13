@@ -86,6 +86,7 @@ The underlying `aqhbci-tool4` commands executed per step:
 6. ~~End-to-end test: DKB → txporter → Firefly III~~ — done, amounts and deposit/withdrawal mapping correct
 7. ~~Skip zero-amount (pending/reserved) transactions~~ — done (issue #11)
 8. ~~REST API for interactive bank setup (replaces setup.sh)~~ — done (issue #13)
+9. ~~CSV import with column mapping~~ — done (issue #37): upload any CSV, map columns to Firefly fields via 3-step wizard, save reusable profiles, tag selection from Firefly
 
 ## Development Guidelines
 

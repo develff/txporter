@@ -1,0 +1,15 @@
+{
+  "accounts": [
+    {
+      "id": "dkb",
+      "name": "dkb",
+      "type": "fints",
+      "blz": "12030000",
+      "url": "https://fints.dkb.de/fints",
+      "login": "12345678",
+      "hbci_version": 300,
+      "tan_mode": 7940
+    }
+  ],
+  "targets": {}
+}
