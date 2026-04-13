@@ -18,6 +18,7 @@ os.environ.setdefault("TXPORTER_CONFIG", _FIXTURE_CONFIG)
 os.environ.setdefault("TXPORTER_PROFILES", os.path.join(
     os.path.dirname(__file__), "..", "config", "bank_profiles.json"
 ))
+os.environ.setdefault("TXPORTER_CSV_MAPPINGS", os.path.join(_FIXTURE_DIR, "csv_mappings.test.json"))
 
 # ── Add src/ to path so server.py's bare imports (aqbanking, config, setup) work.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -28,6 +29,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 import src.setup
 import src.aqbanking
 import src.config
+import src.csv_import
 sys.modules.setdefault("setup", src.setup)
 sys.modules.setdefault("aqbanking", src.aqbanking)
 sys.modules.setdefault("config", src.config)
+sys.modules.setdefault("csv_import", src.csv_import)

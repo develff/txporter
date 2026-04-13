@@ -3,6 +3,7 @@ txporter - REST API server
 Exposes endpoints to trigger transaction sync from financial accounts.
 """
 
+import json
 import re
 import threading
 import time as _time
@@ -658,6 +659,118 @@ def setup_select_account(setup_id):
 
     config["accounts"] = bank_setup.load_config()["accounts"]
     return jsonify(result)
+
+
+@app.route("/csv/fields", methods=["GET"])
+def csv_fields():
+    """List all Firefly fields available for CSV column mapping."""
+    from csv_import import FIREFLY_FIELDS
+    return jsonify(FIREFLY_FIELDS)
+
+
+@app.route("/csv/preview", methods=["POST"])
+def csv_preview():
+    """Upload a CSV file and return its headers + first 5 data rows.
+
+    Form fields: file (required), delimiter, encoding, skip_rows
+    """
+    file = request.files.get("file")
+    if not file:
+        return jsonify({"error": "No file uploaded"}), 400
+    delimiter = request.form.get("delimiter", ",")
+    encoding = request.form.get("encoding", "utf-8")
+    try:
+        skip_rows = int(request.form.get("skip_rows", 0))
+    except ValueError:
+        return jsonify({"error": "skip_rows must be an integer"}), 400
+    from csv_import import preview_csv
+    try:
+        result = preview_csv(file.read(), delimiter=delimiter, encoding=encoding,
+                             skip_rows=skip_rows)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify(result)
+
+
+@app.route("/csv/import", methods=["POST"])
+def csv_import_route():
+    """Upload a CSV file and import transactions using the provided mapping.
+
+    Form fields: file (required), mapping (JSON string, required)
+    The mapping can be a full profile object or reference an existing mapping by id.
+    """
+    file = request.files.get("file")
+    if not file:
+        return jsonify({"error": "No file uploaded"}), 400
+    mapping_json = request.form.get("mapping")
+    if not mapping_json:
+        return jsonify({"error": "Field 'mapping' (JSON) is required"}), 400
+    try:
+        mapping = json.loads(mapping_json)
+    except ValueError:
+        return jsonify({"error": "Field 'mapping' is not valid JSON"}), 400
+
+    from csv_import import parse_and_map
+    try:
+        transactions = parse_and_map(file.read(), mapping)
+    except Exception as e:
+        logger.error("CSV parse error: %s", e)
+        return jsonify({"error": str(e)}), 400
+
+    account = {"name": mapping.get("account_name", "")}
+    stats = _forward_to_targets(transactions, account)
+    return jsonify({"status": "ok", "found": len(transactions), **stats})
+
+
+@app.route("/csv/mappings", methods=["GET"])
+def csv_mappings_list():
+    """List all saved CSV mapping profiles."""
+    from csv_import import load_mappings
+    return jsonify(load_mappings())
+
+
+@app.route("/csv/mappings", methods=["POST"])
+def csv_mappings_save():
+    """Save or update a CSV mapping profile.
+
+    Body must include 'id' and 'name'. Replaces any existing profile with the same id.
+    """
+    body = request.get_json(force=True, silent=True) or {}
+    if not body.get("id") or not body.get("name"):
+        return jsonify({"error": "Fields 'id' and 'name' are required"}), 400
+    from csv_import import load_mappings, save_mappings
+    mappings = load_mappings()
+    mappings = [body if m["id"] == body["id"] else m for m in mappings]
+    if not any(m["id"] == body["id"] for m in mappings):
+        mappings.append(body)
+    save_mappings(mappings)
+    return jsonify(body)
+
+
+@app.route("/csv/mappings/<mapping_id>", methods=["DELETE"])
+def csv_mappings_delete(mapping_id):
+    """Delete a saved CSV mapping profile by id."""
+    from csv_import import load_mappings, save_mappings
+    mappings = load_mappings()
+    updated = [m for m in mappings if m["id"] != mapping_id]
+    if len(updated) == len(mappings):
+        return jsonify({"error": f"No mapping found for '{mapping_id}'"}), 404
+    save_mappings(updated)
+    return jsonify({"status": "ok"})
+
+
+@app.route("/tags", methods=["GET"])
+def get_tags():
+    """Return all tag names from the configured Firefly III instance."""
+    firefly_cfg = config.get("targets", {}).get("firefly")
+    if not firefly_cfg or not firefly_cfg.get("enabled"):
+        return jsonify([])
+    from firefly import FireflyClient
+    try:
+        return jsonify(FireflyClient(firefly_cfg).get_tags())
+    except Exception as e:
+        logger.warning("Could not fetch tags from Firefly: %s", e)
+        return jsonify([])
 
 
 @app.route("/status", methods=["GET"])

@@ -1,0 +1,33 @@
+[
+  {
+    "id": "crypto-com-visa",
+    "name": "Crypto.com Visa",
+    "delimiter": ",",
+    "encoding": "utf-8",
+    "skip_rows": 0,
+    "account_name": "Crypto.com",
+    "fields": {
+      "date": {
+        "column": "Timestamp (UTC)"
+      },
+      "amount": {
+        "column": "Amount"
+      },
+      "currency_code": {
+        "column": "Currency"
+      },
+      "description": {
+        "column": "Transaction Description"
+      },
+      "foreign_amount": {
+        "column": "To Amount"
+      },
+      "foreign_currency_code": {
+        "column": "To Currency"
+      },
+      "tags": {
+        "value": "CDC-CSV,testimport"
+      }
+    }
+  }
+]

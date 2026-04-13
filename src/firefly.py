@@ -75,6 +75,29 @@ class FireflyClient:
             "Accept": "application/json"
         }
 
+    def get_tags(self) -> list:
+        """Fetch all tag names from Firefly III (sorted)."""
+        tags = []
+        page = 1
+        while True:
+            response = requests.get(
+                f"{self.base_url}/api/v1/tags",
+                headers=self.headers,
+                params={"limit": 100, "page": page},
+            )
+            if not response.ok:
+                break
+            data = response.json()
+            for item in data.get("data", []):
+                tag = item.get("attributes", {}).get("tag")
+                if tag:
+                    tags.append(tag)
+            meta = data.get("meta", {}).get("pagination", {})
+            if page >= meta.get("total_pages", 1):
+                break
+            page += 1
+        return sorted(tags)
+
     def import_transactions(self, transactions: list, account: dict) -> dict:
         """Import a list of transactions into Firefly III.
 
@@ -265,7 +288,7 @@ class FireflyClient:
             "date": _iso_date(tx.get("date", "")),
             "amount": amount,
             "currency_code": tx.get("currency_code", ""),
-            "description": _build_description(tx),
+            "description": tx.get("description") or _build_description(tx),
             "external_id": tx.get("external_id", ""),
         }
 
@@ -286,6 +309,21 @@ class FireflyClient:
             split["sepa_ct_id"] = tx["end_to_end_reference"]
         if tx.get("primanota") and tx.get("primanota") != "0":
             split["internal_reference"] = tx["primanota"]
+
+        if tx.get("category_name"):
+            split["category_name"] = tx["category_name"]
+        if tx.get("budget_name"):
+            split["budget_name"] = tx["budget_name"]
+        if tx.get("tags"):
+            raw_tags = tx["tags"]
+            split["tags"] = (
+                [t.strip() for t in raw_tags.split(",") if t.strip()]
+                if isinstance(raw_tags, str) else list(raw_tags)
+            )
+        if tx.get("foreign_amount"):
+            split["foreign_amount"] = f"{abs(float(tx['foreign_amount'])):.8f}".rstrip("0").rstrip(".")
+            if tx.get("foreign_currency_code"):
+                split["foreign_currency_code"] = tx["foreign_currency_code"]
 
         notes = _build_notes(tx)
         if notes:

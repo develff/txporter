@@ -241,3 +241,39 @@ class TestLastSyncStatus:
         assert resp.status_code == 200
         acc = next(a for a in resp.get_json() if a["id"] == "consorsbank")
         assert acc.get("last_sync_status") == "ok"
+
+
+class TestTagsEndpoint:
+    def test_returns_empty_list_when_firefly_disabled(self, sync_client):
+        # sync_client fixture has firefly enabled=False
+        resp = sync_client.get("/tags")
+        assert resp.status_code == 200
+        assert resp.get_json() == []
+
+    def test_returns_tags_from_firefly(self, sync_client):
+        import src.server as server_mod
+        server_mod.config["targets"]["firefly"] = {
+            "enabled": True, "url": "https://firefly.example.com", "token": "t",
+        }
+        mock_resp = MagicMock()
+        mock_resp.ok = True
+        mock_resp.json.return_value = {
+            "data": [{"attributes": {"tag": "Food"}}, {"attributes": {"tag": "Travel"}}],
+            "meta": {"pagination": {"total_pages": 1}},
+        }
+        with patch("src.firefly.requests.get", return_value=mock_resp):
+            resp = sync_client.get("/tags")
+        assert resp.status_code == 200
+        assert resp.get_json() == ["Food", "Travel"]
+        server_mod.config["targets"]["firefly"]["enabled"] = False
+
+    def test_returns_empty_list_on_firefly_error(self, sync_client):
+        import src.server as server_mod
+        server_mod.config["targets"]["firefly"] = {
+            "enabled": True, "url": "https://firefly.example.com", "token": "t",
+        }
+        with patch("src.firefly.requests.get", side_effect=Exception("boom")):
+            resp = sync_client.get("/tags")
+        assert resp.status_code == 200
+        assert resp.get_json() == []
+        server_mod.config["targets"]["firefly"]["enabled"] = False
