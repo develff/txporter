@@ -48,7 +48,7 @@ Location: `config/banks.json` (gitignored — never commit this file)
 |------|-----|-----|----------|
 | DKB | 12030000 | `https://fints.dkb.de/fints` | 7940 (DKB App) |
 | 1822direkt | 50050222 | `https://fints.1822direkt.com/fints/hbci` | 6903 (1822TAN+) |
-| Consorsbank | 76030080 | `https://fin.consorsbank.de/auth` | pushTAN (unverified) |
+| Consorsbank | 76030080 | `https://brokerage-hbci.consorsbank.de/hbci` | 6900 (pushTAN) |
 
 ### Targets
 
@@ -75,13 +75,9 @@ Location: `config/banks.json` (gitignored — never commit this file)
 
 Location: `config/pinfile` (gitignored — never commit this file)
 
-AqBanking reads PINs non-interactively from a PIN file. Generate it with:
+PINs are passed directly via the REST API during setup and sync — no manual PIN file management is needed in normal use. txporter writes the PIN file automatically.
 
-```bash
-docker compose run --rm txporter aqhbci-tool4 mkpinlist -o /home/txporter/config/pinfile
-```
-
-Then edit `config/pinfile` and add your PIN for each bank account in the format:
+If you need to manage the PIN file manually (e.g. for debugging):
 
 ```
 PIN_BLZ_LOGIN = "yourpin"

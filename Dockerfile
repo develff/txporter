@@ -9,6 +9,7 @@ RUN zypper --non-interactive refresh && \
         python313 \
         python313-Flask \
         python313-requests \
+        python313-gunicorn \
         curl \
     && zypper clean --all
 
@@ -28,4 +29,6 @@ RUN chmod +x scripts/*.sh
 
 EXPOSE 8090
 
-CMD ["python3", "src/server.py"]
+# workers=1: global state (_pending_syncs, _running_proc) must not be shared across workers.
+# timeout=300: bank syncs can take up to ~210 s (90 s drain + 120 s complete_fetch).
+CMD ["gunicorn", "--chdir", "src", "--bind", "0.0.0.0:8090", "--workers", "1", "--timeout", "300", "server:app"]

@@ -22,6 +22,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024  # 16 MB cap for CSV uploads
 config = load_config()
 
 # Stores running aqbanking processes waiting for TAN confirmation
