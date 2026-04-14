@@ -22,7 +22,43 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run tests with coverage
-        run: pytest tests/ --cov=src --cov-report=xml
+        run: pytest tests/ --cov=src --cov-report=xml --cov-report=term-missing
+
+      - name: Coverage summary
+        run: |
+          python - <<'EOF'
+          import xml.etree.ElementTree as ET
+
+          tree = ET.parse("coverage.xml")
+          root = tree.getroot()
+
+          total_stmts = int(root.get("lines-valid", 0))
+          covered_stmts = int(root.get("lines-covered", 0))
+          pct = float(root.get("line-rate", 0)) * 100
+
+          rows = []
+          for pkg in root.iter("package"):
+              for cls in pkg.iter("class"):
+                  filename = cls.get("filename", "")
+                  rate = float(cls.get("line-rate", 0)) * 100
+                  stmts = sum(1 for _ in cls.iter("line"))
+                  missed = sum(1 for l in cls.iter("line") if l.get("hits", "0") == "0")
+                  rows.append((filename, stmts, missed, rate))
+
+          rows.sort(key=lambda r: r[0])
+
+          summary = f"## Coverage: {pct:.1f}%\n\n"
+          summary += f"**{covered_stmts} / {total_stmts} statements covered**\n\n"
+          summary += "| File | Statements | Missed | Coverage |\n"
+          summary += "|------|-----------|--------|----------|\n"
+          for filename, stmts, missed, rate in rows:
+              icon = "✅" if rate == 100 else ("⚠️" if rate >= 80 else "❌")
+              summary += f"| `{filename}` | {stmts} | {missed} | {icon} {rate:.1f}% |\n"
+
+          import os
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write(summary)
+          EOF
 
       - name: SonarCloud Scan
         uses: SonarSource/sonarcloud-github-action@master
