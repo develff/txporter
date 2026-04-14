@@ -9,7 +9,7 @@ import threading
 import time as _time
 import uuid
 from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from zoneinfo import ZoneInfo
 
 import requests as _requests
 from flask import Flask, jsonify, render_template, request
@@ -23,6 +23,8 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 config = load_config()
+
+_ISO_DATETIME_FMT = "%Y-%m-%dT%H:%M:%SZ"
 
 # Stores running aqbanking processes waiting for TAN confirmation
 # { account_id: {"proc": Popen, "client": AqBankingClient, "account": dict} }
@@ -49,7 +51,7 @@ def _user_tz(sched_cfg: dict) -> ZoneInfo:
     tz_name = sched_cfg.get("timezone") or "UTC"
     try:
         return ZoneInfo(tz_name)
-    except (ZoneInfoNotFoundError, KeyError):
+    except KeyError:
         logger.warning(f"Timezone '{tz_name}' not found (tzdata missing?), falling back to UTC")
         return ZoneInfo("UTC")
 
@@ -77,7 +79,7 @@ def _fire_webhook(webhook_url: str, account_id: str, error: str) -> None:
         _requests.post(webhook_url, json={
             "account": account_id,
             "error": error,
-            "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "timestamp": datetime.now(timezone.utc).strftime(_ISO_DATETIME_FMT),
         }, timeout=10)
         logger.info(f"Webhook fired for {account_id}: {error}")
     except Exception as e:
@@ -105,7 +107,7 @@ def _run_scheduled_sync() -> None:
     logger.info("Running scheduled sync")
     sched_cfg = get_scheduler_config()
     webhook_url = sched_cfg.get("webhook_url", "")
-    for account in list(config["accounts"]):
+    for account in config["accounts"]:
         if not account.get("aqbanking_id"):
             continue
         if account.get("enabled") is False:
@@ -187,6 +189,9 @@ def scheduler_post():
     webhook_url = (body.get("webhook_url") or "").strip()
     timezone_name = (body.get("timezone") or "UTC").strip()
 
+    if webhook_url and not webhook_url.startswith(("http://", "https://")):
+        return jsonify({"error": "webhook_url must start with http:// or https://"}), 400
+
     if enabled and time_str:
         if not re.match(r"^\d{2}:\d{2}$", time_str):
             return jsonify({"error": "time must be in HH:MM format"}), 400
@@ -195,7 +200,7 @@ def scheduler_post():
             return jsonify({"error": "time out of range"}), 400
     try:
         ZoneInfo(timezone_name)
-    except (ZoneInfoNotFoundError, KeyError):
+    except KeyError:
         return jsonify({"error": f"Unknown timezone '{timezone_name}'"}), 400
 
     cfg = bank_setup.load_config()
@@ -848,7 +853,7 @@ def _save_last_sync(account_id: str) -> None:
         cfg = bank_setup.load_config()
         account = next((a for a in cfg["accounts"] if a["id"] == account_id), None)
         if account:
-            account["last_sync_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            account["last_sync_at"] = datetime.now(timezone.utc).strftime(_ISO_DATETIME_FMT)
             account["last_sync_status"] = "ok"
             account.pop("last_sync_error", None)
             bank_setup.save_config(cfg)
@@ -863,7 +868,7 @@ def _save_last_sync_error(account_id: str, status: str, error: str) -> None:
         cfg = bank_setup.load_config()
         account = next((a for a in cfg["accounts"] if a["id"] == account_id), None)
         if account:
-            account["last_sync_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            account["last_sync_at"] = datetime.now(timezone.utc).strftime(_ISO_DATETIME_FMT)
             account["last_sync_status"] = status
             account["last_sync_error"] = error
             bank_setup.save_config(cfg)
