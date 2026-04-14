@@ -1,29 +1,39 @@
 # txporter
 
-A Dockerized REST service that fetches transactions from financial accounts and forwards them to configurable targets.
+A Dockerized REST service that fetches transactions from financial accounts and forwards them to Firefly III or CSV files.
 
 ## Features
 
-- Fetch transactions from banks via FinTS/HBCI (using AqBanking)
-- Fetch transactions from PayPal (using AqBanking)
+- Fetch transactions from German banks via FinTS/HBCI (using AqBanking)
+- Import transactions from CSV exports (Crypto.com, PayPal export, etc.)
 - Forward transactions to Firefly III via REST API
-- Forward transactions as CSV
-- On-demand sync via REST API
+- Export transactions as CSV
+- On-demand sync via REST API or Web UI
+- Scheduled automatic sync
 - Multi-account support
+- Bank account setup via REST API (no shell access needed)
 
 ## Supported Sources
 
 | Source | Protocol | Status |
 |--------|----------|--------|
-| German banks (DKB, 1822direkt, Consorsbank, ...) | FinTS/HBCI | planned |
+| DKB | FinTS/HBCI | ✅ working |
+| 1822direkt | FinTS/HBCI | ✅ working (read-only since 2025-09-16) |
+| Consorsbank | FinTS/HBCI | ✅ working |
+| Other German banks | FinTS/HBCI | should work (untested) |
+| CSV file import | — | ✅ working |
 | PayPal | AqBanking PayPal backend | planned |
 
 ## Supported Targets
 
 | Target | Status |
 |--------|--------|
-| Firefly III (REST API) | planned |
-| CSV file | planned |
+| Firefly III (REST API) | ✅ working |
+| CSV file | ✅ working |
+
+## Security
+
+txporter is designed for use on a **local network or private Docker network** — it has no built-in authentication. Do not expose port 8090 directly to the internet. Run it behind a firewall or VPN.
 
 ## Requirements
 
@@ -39,36 +49,64 @@ cd txporter
 
 # Copy and edit config
 cp config/banks.example.json config/banks.json
-# Edit config/banks.json with your account details
-
-# Initial bank setup (interactive, one-time)
-docker compose run --rm txporter bash scripts/setup.sh
+# Add your Firefly III URL and token to config/banks.json
 
 # Start the service
 docker compose up -d
 
-# Trigger a sync
+# Open the Web UI
+open http://localhost:8090
+```
+
+The Web UI guides you through bank account setup and lets you trigger syncs manually.
+
+### Bank account setup (REST API)
+
+Bank registration is done via the REST API — no shell access or manual file editing required.
+
+```bash
+# Register a bank account (profile-based)
+curl -X POST http://localhost:8090/setup \
+  -H "Content-Type: application/json" \
+  -d '{"bank": "dkb", "login": "YOUR_LOGIN", "pin": "YOUR_PIN"}'
+
+# Confirm the TAN in your banking app, then:
+curl -X POST http://localhost:8090/setup/{setup_id}/confirm
+```
+
+See [docs/setup.md](docs/setup.md) for the full setup flow including photoTAN/chipTAN banks.
+
+### Sync
+
+```bash
+# Sync a single account
+curl -X POST http://localhost:8090/sync/dkb
+
+# For FinTS accounts: confirm TAN in banking app, then:
+curl -X POST http://localhost:8090/sync/dkb/confirm
+
+# Sync all accounts
 curl -X POST http://localhost:8090/sync
 ```
+
+### CSV Import
+
+Upload any CSV export (e.g. Crypto.com, N26 export) via the Web UI. A 3-step wizard lets you map CSV columns to Firefly III fields and save reusable profiles.
 
 ## Architecture
 
 ```
 Financial Account          txporter                    Target
 ─────────────────          ────────────────────        ──────────────
-Bank (FinTS)    ──────────► AqBanking CLI              Firefly III API
-PayPal          ──────────► │                      ──► CSV File
-                            │                      │
-                            REST API (/sync)  ──────┘
+Bank (FinTS)    ──────────► AqBanking CLI          ──► Firefly III API
+CSV file        ──────────► CSV Import Wizard      ──► CSV File
+                            │
+                            REST API + Web UI
 ```
 
 ## Configuration
 
-See [docs/configuration.md](docs/configuration.md) for details.
-
-## Setup
-
-See [docs/setup.md](docs/setup.md) for initial bank account setup.
+See [docs/configuration.md](docs/configuration.md) for details on `banks.json`, environment variables, and the full REST API reference.
 
 ## License
 
