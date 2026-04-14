@@ -18,14 +18,18 @@ RUN zypper --non-interactive refresh && \
 RUN useradd -m -s /bin/bash txporter && \
     mkdir -p /home/txporter/.aqbanking && \
     chown -R txporter:txporter /home/txporter/.aqbanking
-USER txporter
 WORKDIR /home/txporter
 
-# Copy application
-COPY --chown=txporter:txporter src/ ./src/
-COPY --chown=txporter:txporter scripts/ ./scripts/
-COPY --chown=txporter:txporter config/bank_profiles.json ./config/bank_profiles.json
-RUN chmod +x scripts/*.sh
+# Copy application as root, then lock down permissions so the running
+# process cannot modify its own source files.
+COPY src/ ./src/
+COPY scripts/ ./scripts/
+COPY config/bank_profiles.json ./config/bank_profiles.json
+RUN chmod -R 755 src/ scripts/ && \
+    chmod 644 config/bank_profiles.json && \
+    chown -R root:root src/ scripts/ config/
+
+USER txporter
 
 EXPOSE 8090
 
