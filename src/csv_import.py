@@ -195,7 +195,7 @@ def parse_and_map(file_bytes: bytes, mapping: dict) -> list:
                     decimal_sep=fa_cfg.get("decimal_sep", "."),
                     thousands_sep=fa_cfg.get("thousands_sep", ""),
                 )
-                if val != 0.0:
+                if val:
                     tx["foreign_amount"] = val
 
         transactions.append(tx)

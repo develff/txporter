@@ -385,3 +385,211 @@ class TestGermanIban:
         iban = _german_iban({"bank_code_aq": "12030000", "account_number": "1234567890"})
         assert iban is not None
         assert iban.startswith("DE")
+
+    def test_returns_none_for_account_number_too_long(self):
+        assert _german_iban({"blz": "12030000", "account_number": "12345678901"}) is None
+
+
+class TestDedupStartDateValueError:
+    def test_returns_none_on_unparseable_date(self):
+        txs = [make_tx(date="not-a-date")]
+        result = FireflyClient._dedup_start_date(txs)
+        assert result is None
+
+
+class TestFetchExistingExternalIds:
+    def test_returns_empty_set_when_account_id_is_none(self):
+        client = FireflyClient(CONFIG)
+        assert client._fetch_existing_external_ids(None) == set()
+
+    def test_returns_empty_set_on_api_error(self):
+        client = FireflyClient(CONFIG)
+        mock_resp = MagicMock()
+        mock_resp.ok = False
+        mock_resp.status_code = 500
+        with patch("src.firefly.requests.get", return_value=mock_resp):
+            result = client._fetch_existing_external_ids("42")
+        assert result == set()
+
+    def test_collects_external_ids_from_multiple_pages(self):
+        client = FireflyClient(CONFIG)
+
+        def make_page(ext_ids, total_pages):
+            mock_resp = MagicMock()
+            mock_resp.ok = True
+            mock_resp.json.return_value = {
+                "data": [
+                    {"attributes": {"transactions": [{"external_id": eid}]}}
+                    for eid in ext_ids
+                ],
+                "meta": {"pagination": {"total_pages": total_pages}},
+            }
+            return mock_resp
+
+        with patch("src.firefly.requests.get", side_effect=[
+            make_page(["id1", "id2"], 2),
+            make_page(["id3"], 2),
+        ]):
+            result = client._fetch_existing_external_ids("42")
+        assert result == {"id1", "id2", "id3"}
+
+    def test_stops_when_data_is_empty(self):
+        client = FireflyClient(CONFIG)
+        mock_resp = MagicMock()
+        mock_resp.ok = True
+        mock_resp.json.return_value = {
+            "data": [],
+            "meta": {"pagination": {"total_pages": 5}},
+        }
+        with patch("src.firefly.requests.get", return_value=mock_resp) as mock_get:
+            client._fetch_existing_external_ids("42")
+        assert mock_get.call_count == 1
+
+
+class TestImportTransactions:
+    def _client(self):
+        return FireflyClient(CONFIG)
+
+    def _mock_ensure(self, account_id="99"):
+        return patch("src.firefly.FireflyClient._ensure_asset_account", return_value=account_id)
+
+    def _mock_fetch(self, existing=None):
+        return patch("src.firefly.FireflyClient._fetch_existing_external_ids",
+                     return_value=set(existing or []))
+
+    def test_empty_transactions_returns_zeros(self):
+        client = self._client()
+        result = client.import_transactions([], ACCOUNT)
+        assert result == {"found": 0, "imported": 0, "skipped": 0}
+
+    def test_imports_new_transaction(self):
+        client = self._client()
+        tx = make_tx()
+        with self._mock_ensure(), self._mock_fetch(), \
+             patch("src.firefly.FireflyClient._create_transaction", return_value=True):
+            result = client.import_transactions([tx], ACCOUNT)
+        assert result["imported"] == 1
+        assert result["skipped"] == 0
+
+    def test_skips_duplicate_external_id(self):
+        client = self._client()
+        tx = make_tx(external_id="existing-id")
+        with self._mock_ensure(), self._mock_fetch(existing=["existing-id"]):
+            result = client.import_transactions([tx], ACCOUNT)
+        assert result["skipped"] == 1
+        assert result["imported"] == 0
+
+    def test_skips_when_create_returns_false(self):
+        client = self._client()
+        tx = make_tx(amount_eur=0.0)
+        with self._mock_ensure(), self._mock_fetch(), \
+             patch("src.firefly.FireflyClient._create_transaction", return_value=False):
+            result = client.import_transactions([tx], ACCOUNT)
+        assert result["skipped"] == 1
+        assert result["imported"] == 0
+
+    def test_counts_found_correctly(self):
+        client = self._client()
+        txs = [make_tx(external_id=f"id{i}") for i in range(3)]
+        with self._mock_ensure(), self._mock_fetch(), \
+             patch("src.firefly.FireflyClient._create_transaction", return_value=True):
+            result = client.import_transactions(txs, ACCOUNT)
+        assert result["found"] == 3
+        assert result["imported"] == 3
+
+
+class TestEnsureAssetAccount:
+    def _client(self):
+        return FireflyClient(CONFIG)
+
+    def _mock_get_accounts(self, accounts):
+        mock_resp = MagicMock()
+        mock_resp.ok = True
+        mock_resp.json.return_value = {"data": accounts}
+        return mock_resp
+
+    def test_matches_by_iban(self):
+        client = self._client()
+        account = {"name": "DKB", "iban": "DE89370400440532013000"}
+        firefly_account = {
+            "id": "5",
+            "attributes": {"name": "DKB", "iban": "DE89370400440532013000", "account_number": ""}
+        }
+        with patch("src.firefly.requests.get", return_value=self._mock_get_accounts([firefly_account])):
+            result = client._ensure_asset_account("DKB", "EUR", account)
+        assert result == "5"
+
+    def test_matches_by_account_number(self):
+        client = self._client()
+        account = {"name": "Depot", "account_number": "1234567890"}
+        firefly_account = {
+            "id": "7",
+            "attributes": {"name": "Depot", "iban": "", "account_number": "1234567890"}
+        }
+        with patch("src.firefly.requests.get", return_value=self._mock_get_accounts([firefly_account])):
+            result = client._ensure_asset_account("Depot", "EUR", account)
+        assert result == "7"
+
+    def test_matches_by_name_and_backfills_iban(self):
+        client = self._client()
+        account = {"name": "DKB", "blz": "12030000", "account_number": "1234567890"}
+        firefly_account = {
+            "id": "3",
+            "attributes": {"name": "DKB", "iban": "", "account_number": ""}
+        }
+        with patch("src.firefly.requests.get", return_value=self._mock_get_accounts([firefly_account])), \
+             patch("src.firefly.FireflyClient._backfill_iban") as mock_backfill:
+            result = client._ensure_asset_account("DKB", "EUR", account)
+        assert result == "3"
+        mock_backfill.assert_called_once()
+
+    def test_creates_account_when_not_found(self):
+        client = self._client()
+        account = {"name": "New Bank"}
+        mock_get = MagicMock()
+        mock_get.ok = True
+        mock_get.json.return_value = {"data": []}
+        mock_post = MagicMock()
+        mock_post.ok = True
+        mock_post.json.return_value = {"data": {"id": "99"}}
+        with patch("src.firefly.requests.get", return_value=mock_get), \
+             patch("src.firefly.requests.post", return_value=mock_post):
+            result = client._ensure_asset_account("New Bank", "EUR", account)
+        assert result == "99"
+
+    def test_returns_none_when_create_fails(self):
+        client = self._client()
+        account = {"name": "New Bank"}
+        mock_get = MagicMock()
+        mock_get.ok = True
+        mock_get.json.return_value = {"data": []}
+        mock_post = MagicMock()
+        mock_post.ok = False
+        mock_post.text = "error"
+        with patch("src.firefly.requests.get", return_value=mock_get), \
+             patch("src.firefly.requests.post", return_value=mock_post):
+            result = client._ensure_asset_account("New Bank", "EUR", account)
+        assert result is None
+
+
+class TestBackfillIban:
+    def test_logs_success(self, caplog):
+        import logging
+        client = FireflyClient(CONFIG)
+        mock_resp = MagicMock()
+        mock_resp.ok = True
+        with patch("src.firefly.requests.put", return_value=mock_resp), \
+             caplog.at_level(logging.INFO, logger="src.firefly"):
+            client._backfill_iban("42", "DE89370400440532013000", "532013000")
+        assert "Backfilled IBAN" in caplog.text
+
+    def test_logs_warning_on_failure(self, caplog):
+        import logging
+        client = FireflyClient(CONFIG)
+        mock_resp = MagicMock()
+        mock_resp.ok = False
+        mock_resp.text = "error"
+        with patch("src.firefly.requests.put", return_value=mock_resp), \
+             caplog.at_level(logging.WARNING, logger="src.firefly"):
+            client._backfill_iban("42", "DE89370400440532013000", "")
+        assert "Could not backfill IBAN" in caplog.text

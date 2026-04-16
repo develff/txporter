@@ -274,7 +274,7 @@ class FireflyClient:
     def _create_transaction(self, tx: dict, account: dict) -> bool:
         """Create a single transaction in Firefly III. Returns True on success, False on skip/error."""
         amount_eur = tx.get("amount_eur", 0.0)
-        if amount_eur == 0.0:
+        if not amount_eur:
             logger.debug("Skipping zero-amount transaction external_id=%s", tx.get("external_id"))
             return False
         is_withdrawal = amount_eur < 0
