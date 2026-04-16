@@ -17,6 +17,10 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+_PTY_CHOICE_PROMPT = b"Please enter your choice:"
+_PTY_STALE_LOCK    = b"Possible Stale Lock"
+_PTY_TAN_INPUT     = b"Input:"
+
 PINFILE = os.environ.get("TXPORTER_PINFILE", "/home/txporter/config/pinfile")
 CONFIG_PATH = os.environ.get("TXPORTER_CONFIG", "/home/txporter/config/banks.json")
 PROFILES_PATH = os.environ.get("TXPORTER_PROFILES", "/home/txporter/config/bank_profiles.json")
@@ -111,7 +115,7 @@ def _parse_listaccounts(output: str) -> list:
         acc["account_type_label"] = _ACCOUNT_TYPE_LABELS.get(
             acc["account_type"].lower(), acc["account_type"]
         ) if acc["account_type"] else None
-        m = re.search(r"\bName:\s*([^,\n]+?)(?=\s+\w+:|$)", line)
+        m = re.search(r"\bName:\s*([^,\n]+)(?=\s+\w+:|$)", line)
         acc["owner_name"] = m.group(1).strip() if m else None
         accounts.append(acc)
     return accounts
@@ -381,8 +385,8 @@ class SetupSession:
                     self._cert_output += os.read(self._cert_master_fd, 4096)
                 except OSError:
                     break
-            if b"Please enter your choice:" in self._cert_output:
-                if b"Possible Stale Lock" in self._cert_output:
+            if _PTY_CHOICE_PROMPT in self._cert_output:
+                if _PTY_STALE_LOCK in self._cert_output:
                     logger.warning("Stale AqBanking lock detected during getsysid — removing automatically")
                     try:
                         os.write(self._cert_master_fd, b"2\n")
@@ -499,7 +503,7 @@ class SetupSession:
                 except OSError:
                     pass
                 output_text = self._acc_output.decode("utf-8", errors="replace")
-                if b"Input:" in self._acc_output:
+                if _PTY_TAN_INPUT in self._acc_output:
                     return self._extract_tan_challenge()
                 if self.proc.returncode != 0:
                     raise RuntimeError(f"getaccounts failed: {output_text}")
@@ -520,8 +524,8 @@ class SetupSession:
                             elapsed, self._acc_output[-500:])
                 last_log = time.monotonic()
 
-            if b"Please enter your choice:" in self._acc_output:
-                if b"Possible Stale Lock" in self._acc_output:
+            if _PTY_CHOICE_PROMPT in self._acc_output:
+                if _PTY_STALE_LOCK in self._acc_output:
                     logger.warning("Stale AqBanking lock detected during getaccounts — removing automatically")
                     try:
                         os.write(self._acc_master_fd, b"2\n")
@@ -539,7 +543,7 @@ class SetupSession:
                     self._acc_output = b""
                     continue
 
-            if b"Input:" in self._acc_output:
+            if _PTY_TAN_INPUT in self._acc_output:
                 return self._extract_tan_challenge()
 
         if pty_eof:
@@ -553,7 +557,7 @@ class SetupSession:
             except OSError:
                 pass
             output_text = self._acc_output.decode("utf-8", errors="replace")
-            if b"Input:" in self._acc_output:
+            if _PTY_TAN_INPUT in self._acc_output:
                 return self._extract_tan_challenge()
             if self.proc.returncode != 0:
                 raise RuntimeError(f"getaccounts failed: {output_text}")
@@ -596,8 +600,8 @@ class SetupSession:
                 stop_reason = "pty_eof"
                 break
 
-            if b"Please enter your choice:" in self._acc_output:
-                if b"Possible Stale Lock" in self._acc_output:
+            if _PTY_CHOICE_PROMPT in self._acc_output:
+                if _PTY_STALE_LOCK in self._acc_output:
                     logger.warning("Stale AqBanking lock detected (drain) — removing automatically")
                     try:
                         os.write(self._acc_master_fd, b"2\n")
@@ -609,7 +613,7 @@ class SetupSession:
                 stop_reason = "interactive_prompt"
                 break
 
-            if b"Input:" in self._acc_output:
+            if _PTY_TAN_INPUT in self._acc_output:
                 stop_reason = "tan_input_prompt"
                 break
         logger.info("getaccounts PTY drain finished after %.1fs, reason=%s",

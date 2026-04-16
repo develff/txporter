@@ -63,7 +63,11 @@ class TestSyncConfirmDryRun:
 
     def test_dry_run_returns_transactions_as_json(self, sync_client):
         self._inject_pending_sync(SAMPLE_TRANSACTIONS)
-        resp = sync_client.post("/sync/consorsbank/confirm?dry_run=true")
+        resp = sync_client.post(
+            "/sync/consorsbank/confirm",
+            data=json.dumps({"dry_run": True}),
+            content_type="application/json",
+        )
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["status"] == "dry_run"
@@ -73,7 +77,11 @@ class TestSyncConfirmDryRun:
     def test_dry_run_does_not_forward_to_targets(self, sync_client):
         self._inject_pending_sync(SAMPLE_TRANSACTIONS)
         with patch("src.server._forward_to_targets") as mock_fwd:
-            sync_client.post("/sync/consorsbank/confirm?dry_run=true")
+            sync_client.post(
+                "/sync/consorsbank/confirm",
+                data=json.dumps({"dry_run": True}),
+                content_type="application/json",
+            )
         mock_fwd.assert_not_called()
 
     def test_normal_confirm_forwards_to_targets(self, sync_client):
@@ -86,7 +94,11 @@ class TestSyncConfirmDryRun:
 
     def test_export_format_json_returns_transactions(self, sync_client):
         self._inject_pending_sync(SAMPLE_TRANSACTIONS)
-        resp = sync_client.post("/sync/consorsbank/confirm?export_format=json")
+        resp = sync_client.post(
+            "/sync/consorsbank/confirm",
+            data=json.dumps({"export_format": "json"}),
+            content_type="application/json",
+        )
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["status"] == "ok"
@@ -96,12 +108,20 @@ class TestSyncConfirmDryRun:
     def test_export_format_csv_does_not_forward_to_targets(self, sync_client):
         self._inject_pending_sync(SAMPLE_TRANSACTIONS)
         with patch("src.server._forward_to_targets") as mock_fwd:
-            resp = sync_client.post("/sync/consorsbank/confirm?export_format=csv")
+            resp = sync_client.post(
+                "/sync/consorsbank/confirm",
+                data=json.dumps({"export_format": "csv"}),
+                content_type="application/json",
+            )
         assert resp.status_code == 200
         mock_fwd.assert_not_called()
 
     def test_unknown_account_returns_404(self, sync_client):
-        resp = sync_client.post("/sync/unknown/confirm?dry_run=true")
+        resp = sync_client.post(
+            "/sync/unknown/confirm",
+            data=json.dumps({"dry_run": True}),
+            content_type="application/json",
+        )
         assert resp.status_code == 404
 
 

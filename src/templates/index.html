@@ -305,7 +305,7 @@
 
     /* ── Disabled account ── */
     .card.disabled { opacity: .55; }
-    .badge-disabled { background: #f1f5f9; color: #94a3b8; }
+    .badge-disabled { background: #f1f5f9; color: #64748b; }
 
     /* ── Toggle switch ── */
     .toggle { display: inline-flex; align-items: center; cursor: pointer; }
@@ -521,12 +521,12 @@ function updateSchedulerIndicator(enabled, time) {
 async function loadAccounts() {
   try {
     state.accounts = await api("GET", "/accounts");
-  } catch (e) {
+  } catch {
     state.accounts = [];
   }
   try {
     state.aqAccounts = await api("GET", "/aqbanking/accounts");
-  } catch (e) {
+  } catch {
     state.aqAccounts = [];
   }
   renderAccounts();
@@ -553,9 +553,9 @@ function renderAccounts() {
     const statusBadge = connected
       ? `<span class="badge badge-ok">connected</span>`
       : `<span class="badge badge-warn">setup incomplete</span>`;
-    const enabledBadge = !enabled
-      ? `<span class="badge badge-disabled">disabled</span>`
-      : "";
+    const enabledBadge = enabled
+      ? ""
+      : `<span class="badge badge-disabled">disabled</span>`;
     const typeLabelBadge = a.account_type_label
       ? `<span class="badge badge-fints" style="background:#f0fdf4;color:#166534">${esc(a.account_type_label)}</span>`
       : "";
@@ -570,9 +570,9 @@ function renderAccounts() {
       accountLine = `<div class="card-hint">No account number available — sync uses AqBanking ID ${a.aqbanking_id}.</div>`;
     }
 
-    const hintLine = !connected
-      ? `<div class="card-hint">Setup did not complete &mdash; delete and add again to retry.</div>`
-      : "";
+    const hintLine = connected
+      ? ""
+      : `<div class="card-hint">Setup did not complete &mdash; delete and add again to retry.</div>`;
 
     let lastSyncLine = "";
     if (a.last_sync_at) {
@@ -586,7 +586,7 @@ function renderAccounts() {
     const toggleLabel = enabled ? "Disable" : "Enable";
 
     return `
-    <div class="card${!enabled ? " disabled" : ""}" id="account-card-${a.id}">
+    <div class="card${enabled ? "" : " disabled"}" id="account-card-${a.id}">
       <div class="card-body">
         <div class="card-name">${esc(a.name || a.id)}</div>
         <div class="card-meta">${typeBadge} ${typeLabelBadge} ${statusBadge} ${enabledBadge}</div>
@@ -597,7 +597,7 @@ function renderAccounts() {
       <div class="card-actions">
         ${canSync ? `<button class="btn-secondary btn-sm" onclick="openSyncModal('${a.id}')">Sync</button>` : ""}
         <button class="btn-secondary btn-sm" onclick="toggleAccount('${a.id}')">${toggleLabel}</button>
-        <button class="btn-secondary btn-sm" onclick="openRenameModal('${a.id}', ${JSON.stringify(a.name || a.id).replace(/"/g, '&quot;')})">Rename</button>
+        <button class="btn-secondary btn-sm" onclick="openRenameModal('${a.id}', ${JSON.stringify(a.name || a.id).replaceAll('"', '&quot;')})">Rename</button>
         <button class="btn-danger btn-sm" onclick="deleteAccount('${a.id}')">Delete</button>
       </div>
     </div>`;
@@ -608,9 +608,10 @@ function renderUnconfiguredAqAccounts() {
   const unconfigured = (state.aqAccounts || []).filter(a => !a.configured);
   if (!unconfigured.length) return "";
   const rows = unconfigured.map(a => {
-    const accountLine = a.iban
-      ? esc(a.iban)
-      : (a.account_number ? `Kto ${esc(a.account_number)} · BLZ ${esc(a.bank_code || "")}` : `AqBanking ID ${a.aqbanking_id}`);
+    const accountLineNoIban = a.account_number
+      ? `Kto ${esc(a.account_number)} · BLZ ${esc(a.bank_code || "")}`
+      : `AqBanking ID ${a.aqbanking_id}`;
+    const accountLine = a.iban ? esc(a.iban) : accountLineNoIban;
     const label = a.account_type_label
       ? ` <span class="badge badge-fints" style="background:#f0fdf4;color:#166534">${esc(a.account_type_label)}</span>`
       : "";
@@ -646,8 +647,8 @@ function aqDefaultName(acc) {
 function aqDefaultId(acc) {
   const sameBank = state.accounts.find(a => a.bank_code_aq === acc.bank_code);
   const bankPart = (sameBank ? (sameBank.name || sameBank.id) : (acc.bank_code || "bank"))
-    .toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
-  const typePart = (acc.account_type_label || "").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+    .toLowerCase().replaceAll(/[^a-z0-9]+/g, "_").replaceAll(/^_|_$/g, "");
+  const typePart = (acc.account_type_label || "").toLowerCase().replaceAll(/[^a-z0-9]+/g, "_").replaceAll(/^_|_$/g, "");
   const numPart = acc.account_number || String(acc.aqbanking_id);
   return [bankPart, typePart, numPart].filter(Boolean).join("_");
 }
@@ -737,7 +738,6 @@ const syncOpts = { fromDate: null, toDate: null, days: 30, exportTarget: "firefl
 function syncDateSection() {
   const today = new Date().toISOString().slice(0, 10);
   const d30   = offsetDate(-30);
-  const d90   = offsetDate(-90);
   return `
   <div style="margin-bottom:14px">
     <label style="margin-bottom:6px">Date range</label>
@@ -804,10 +804,9 @@ function buildSyncBody() {
   return body;
 }
 
-function syncConfirmUrl(accountId) {
+function syncConfirmBody() {
   const fmt = syncOpts.exportTarget;
-  if (fmt === "csv" || fmt === "json") return `/sync/${accountId}/confirm?export_format=${fmt}`;
-  return `/sync/${accountId}/confirm`;
+  return (fmt === "csv" || fmt === "json") ? { export_format: fmt } : {};
 }
 
 function openSyncModal(accountId) {
@@ -859,7 +858,7 @@ async function confirmSync() {
   const accountId = state.syncAccountId;
   showModal(syncWaitingScreen(accountId, true, true));
   try {
-    const r = await api("POST", syncConfirmUrl(accountId));
+    const r = await api("POST", `/sync/${accountId}/confirm`, syncConfirmBody());
     if (r.status === "ok") {
       if (r.export_format) {
         triggerDownload(r.transactions, r.export_format, accountId);
@@ -878,26 +877,35 @@ async function confirmSync() {
 
 function syncWaitingScreen(accountId, ready, loading) {
   const account = state.accounts.find(a => a.id === accountId) || { name: accountId };
+  const closeBtn = loading ? "" : `<button class="modal-close" onclick="closeModal()">×</button>`;
+  const subtitle = ready ? "Confirm the request in your banking app" : "Starting sync…";
+  const icon = ready ? "📱" : `<span class="spinner"></span>`;
+  const bodyContent = ready
+    ? `<strong>Open your banking app and confirm the transaction request.</strong>
+        <p>Then click <em>Done</em> when you have confirmed.</p>`
+    : `<p>Connecting to bank…</p>`;
+  const doneAttr = loading ? "disabled" : "";
+  const doneSpinner = loading ? `<span class="spinner"></span> ` : "";
+  const doneBtn = ready
+    ? `<button class="btn-primary" onclick="confirmSync()" ${doneAttr}>${doneSpinner}Done</button>`
+    : "";
   return `
   <div class="modal-header">
     <div>
       <div class="modal-title">Sync ${esc(account.name || accountId)}</div>
-      <div class="modal-subtitle">${ready ? "Confirm the request in your banking app" : "Starting sync…"}</div>
+      <div class="modal-subtitle">${subtitle}</div>
     </div>
-    ${!loading ? `<button class="modal-close" onclick="closeModal()">×</button>` : ""}
+    ${closeBtn}
   </div>
   <div class="modal-body">
     <div class="confirm-screen">
-      <div class="icon">${ready ? "📱" : '<span class="spinner"></span>'}</div>
-      ${ready ? `<strong>Open your banking app and confirm the transaction request.</strong>
-        <p>Then click <em>Done</em> when you have confirmed.</p>` : `<p>Connecting to bank…</p>`}
+      <div class="icon">${icon}</div>
+      ${bodyContent}
     </div>
   </div>
   <div class="modal-footer">
     <button class="btn-secondary" onclick="closeModal()" ${loading ? "disabled" : ""}>Cancel</button>
-    ${ready ? `<button class="btn-primary" onclick="confirmSync()" ${loading ? "disabled" : ""}>
-      ${loading ? '<span class="spinner"></span> ' : ""}Done
-    </button>` : ""}
+    ${doneBtn}
   </div>`;
 }
 
@@ -950,7 +958,7 @@ function syncExportScreen(count, format) {
   <div class="modal-body">
     <div class="success-screen">
       <div class="icon">↓</div>
-      <h3>${count} transaction${count !== 1 ? "s" : ""} exported</h3>
+      <h3>${count} transaction${count === 1 ? "" : "s"} exported</h3>
       <p>Download started as .${esc(format)} file.</p>
     </div>
   </div>
@@ -972,7 +980,7 @@ function openSyncAllModal() {
   <div class="modal-header">
     <div>
       <div class="modal-title">Sync All</div>
-      <div class="modal-subtitle">${eligible.length} account${eligible.length !== 1 ? "s" : ""} will be synced</div>
+      <div class="modal-subtitle">${eligible.length} account${eligible.length === 1 ? "" : "s"} will be synced</div>
     </div>
     <button class="modal-close" onclick="closeModal()">×</button>
   </div>
@@ -1047,18 +1055,18 @@ async function runSyncAll() {
   }
 
   // Expose confirmSyncAllItem in closure
-  window._syncAllStatusMap = statusMap;
-  window._syncAllEligible  = eligible;
-  window._renderSyncAll    = renderSyncAllModal;
+  globalThis._syncAllStatusMap = statusMap;
+  globalThis._syncAllEligible  = eligible;
+  globalThis._renderSyncAll    = renderSyncAllModal;
 }
 
 async function confirmSyncAllItem(accountId) {
-  const statusMap = window._syncAllStatusMap;
-  const renderSyncAllModal = window._renderSyncAll;
+  const statusMap = globalThis._syncAllStatusMap;
+  const renderSyncAllModal = globalThis._renderSyncAll;
   statusMap[accountId].status = "starting";
   renderSyncAllModal(false);
   try {
-    const r = await api("POST", syncConfirmUrl(accountId));
+    const r = await api("POST", `/sync/${accountId}/confirm`, syncConfirmBody());
     if (r.status === "ok") {
       if (r.export_format) {
         triggerDownload(r.transactions, r.export_format, accountId);
@@ -1098,7 +1106,7 @@ function triggerDownload(transactions, format, accountId) {
     for (const tx of transactions) {
       csvRows.push(fields.map(f => {
         const v = tx[f] ?? "";
-        return String(v).includes(",") || String(v).includes('"') ? `"${String(v).replace(/"/g, '""')}"` : v;
+        return String(v).includes(",") || String(v).includes('"') ? `"${String(v).replaceAll('"', '""')}"` : v;
       }).join(","));
     }
     content = csvRows.join("\r\n");
@@ -1117,7 +1125,7 @@ function triggerDownload(transactions, format, accountId) {
 // ── Scheduler settings ─────────────────────────────────────────────────────────
 
 function schedHourSelect(timeVal, disabled) {
-  const cur = timeVal ? parseInt(timeVal.split(":")[0]) : 20;
+  const cur = timeVal ? Number.parseInt(timeVal.split(":")[0], 10) : 20;
   const opts = Array.from({length: 24}, (_, h) =>
     `<option value="${h}" ${h === cur ? "selected" : ""}>${String(h).padStart(2,"0")}</option>`
   ).join("");
@@ -1125,9 +1133,9 @@ function schedHourSelect(timeVal, disabled) {
 }
 
 function schedMinuteSelect(timeVal, disabled) {
-  const cur = timeVal ? parseInt(timeVal.split(":")[1]) : 0;
+  const cur = timeVal ? Number.parseInt(timeVal.split(":")[1], 10) : 0;
   const minutes = [0,5,10,15,20,25,30,35,40,45,50,55];
-  const nearest = minutes.reduce((a, b) => Math.abs(b - cur) < Math.abs(a - cur) ? b : a);
+  const nearest = minutes.reduce((a, b) => Math.abs(b - cur) < Math.abs(a - cur) ? b : a, minutes[0]);
   const opts = minutes.map(m =>
     `<option value="${m}" ${m === nearest ? "selected" : ""}>${String(m).padStart(2,"0")}</option>`
   ).join("");
@@ -1136,7 +1144,7 @@ function schedMinuteSelect(timeVal, disabled) {
 
 async function openSchedulerModal() {
   let cfg = { enabled: false, time: "20:00", webhook_url: "", next_run: null };
-  try { cfg = await api("GET", "/scheduler"); } catch (_) {}
+  try { cfg = await api("GET", "/scheduler"); } catch {}
   showModal(schedulerSettingsScreen(cfg));
 }
 
@@ -1166,7 +1174,7 @@ function schedulerSettingsScreen(cfg) {
         <span class="toggle-track"></span>
       </label>
     </div>
-    <div class="form-group" id="sched-time-group" ${!enabled ? 'style="opacity:.5"' : ""}>
+    <div class="form-group" id="sched-time-group" ${enabled ? "" : 'style="opacity:.5"'}>
       <label>Time (daily) <span style="font-weight:400;text-transform:none">${esc(cfg.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone)}</span></label>
       <div style="display:flex;align-items:center;gap:6px">
         ${schedHourSelect(timeVal, !enabled)}
@@ -1217,7 +1225,7 @@ let profiles = {};
 async function openSetupWizard() {
   try {
     profiles = await api("GET", "/setup/profiles");
-  } catch (_) {
+  } catch {
     profiles = {};
   }
   showModal(wizardStepCredentials());
@@ -1474,7 +1482,7 @@ async function submitTanMode() {
   if (!selected) return;
   setModalLoading(true);
   try {
-    const r = await api("POST", `/setup/${state.setupId}/tanmode`, { tan_mode: parseInt(selected.value) });
+    const r = await api("POST", `/setup/${state.setupId}/tanmode`, { tan_mode: Number.parseInt(selected.value, 10) });
     handleSetupResponse(r);
   } catch (e) {
     prependAlert("alert-error", e.message);
@@ -1609,7 +1617,7 @@ async function submitAccountSelect() {
   if (!selected) { prependAlert("alert-warn", "Please select an account."); return; }
   setModalLoading(true);
   try {
-    const r = await api("POST", `/setup/${state.setupId}/selectaccount`, { aqbanking_id: parseInt(selected.value) });
+    const r = await api("POST", `/setup/${state.setupId}/selectaccount`, { aqbanking_id: Number.parseInt(selected.value, 10) });
     handleSetupResponse(r);
   } catch (e) {
     setModalLoading(false);
@@ -1721,7 +1729,7 @@ function prependAlert(cls, msg) {
 // ── Utility ────────────────────────────────────────────────────────────────────
 function esc(str) {
   if (str == null) return "";
-  return String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  return String(str).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
 }
 
 function offsetDate(days) {
@@ -1733,7 +1741,7 @@ function offsetDate(days) {
 function formatDate(iso) {
   if (!iso) return "";
   const d = new Date(iso);
-  return isNaN(d) ? iso : d.toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" });
+  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" });
 }
 
 // ── Tab navigation ─────────────────────────────────────────────────────────────
@@ -1759,13 +1767,13 @@ const csvState = {
 
 async function loadCsvFields() {
   if (csvState.fields.length) return;
-  try { csvState.fields = await api("GET", "/csv/fields"); } catch (_) {}
+  try { csvState.fields = await api("GET", "/csv/fields"); } catch {}
   api("GET", "/tags").then(t => { csvState.availableTags = t || []; }).catch(() => {});
 }
 
 async function loadCsvMappings() {
   await loadCsvFields();
-  try { csvState.mappings = await api("GET", "/csv/mappings"); } catch (_) { csvState.mappings = []; }
+  try { csvState.mappings = await api("GET", "/csv/mappings"); } catch { csvState.mappings = []; }
   renderCsvMappings();
 }
 
@@ -1861,7 +1869,7 @@ async function runCsvImport(mappingId) {
       <div class="modal-body">
         <div class="success-screen">
           <div class="icon">✅</div>
-          <h3>${imported} transaction${imported !== 1 ? "s" : ""} imported</h3>
+          <h3>${imported} transaction${imported === 1 ? "" : "s"} imported</h3>
           <p>${data.found ?? 0} found · ${imported} imported · ${skipped} skipped (duplicates)</p>
         </div>
       </div>
@@ -1903,9 +1911,10 @@ function openCsvEditWizard(mappingId) {
 
 function _csvWizardProgress(step) {
   const steps = ["Configure", "Map Fields", "Save"];
-  return `<div class="wizard-steps">${steps.map((s, i) =>
-    `<div class="wizard-step ${i < step ? "done" : i === step ? "active" : ""}">${s}</div>`
-  ).join("")}</div>`;
+  return `<div class="wizard-steps">${steps.map((s, i) => {
+    const cls = i < step ? "done" : i === step ? "active" : "";
+    return `<div class="wizard-step ${cls}">${s}</div>`;
+  }).join("")}</div>`;
 }
 
 function _csvWizardStep1(existing) {
@@ -2005,7 +2014,10 @@ async function csvWizPreview() {
 function _csvPreviewTable(headers, rows) {
   if (!headers.length) return `<div class="alert alert-warn" style="margin-top:10px">No columns found. Check delimiter / skip_rows.</div>`;
   const ths = headers.map(h => `<th>${esc(h)}</th>`).join("");
-  const trs = rows.map(r => `<tr>${headers.map(h => `<td>${esc(r[h] ?? "")}</td>`).join("")}</tr>`).join("");
+  const trs = rows.map(r => {
+    const tds = headers.map(h => `<td>${esc(r[h] ?? "")}</td>`).join("");
+    return `<tr>${tds}</tr>`;
+  }).join("");
   return `<div class="csv-preview-wrap"><table class="csv-preview-table"><thead><tr>${ths}</tr></thead><tbody>${trs}</tbody></table></div>`;
 }
 
@@ -2021,7 +2033,7 @@ async function csvWizToStep2() {
   const skip    = document.getElementById("csv-wiz-skip").value;
 
   // Store format settings on state for step 3
-  csvState._step1 = { delimiter: delim, encoding: enc, skip_rows: parseInt(skip) || 0 };
+  csvState._step1 = { delimiter: delim, encoding: enc, skip_rows: Number.parseInt(skip, 10) || 0 };
 
   _csvWizardStep2(existing);
 }
@@ -2057,9 +2069,10 @@ function _csvWizardStep2(existing) {
     }
 
     // Tags field gets a chip-selector widget instead of a plain text input.
+    const fixedStyle = mode === "column" ? "display:none" : "";
     const fixedInput = f.id === "tags"
       ? `<input type="hidden" id="csv-ff-tags-val" value="${esc(fixVal)}">
-         <div id="csv-tags-widget" style="${mode==="column"?"display:none":""}">
+         <div id="csv-tags-widget" style="${fixedStyle}">
            <div class="csv-tags-chips" id="csv-tags-chips"></div>
            <input type="text" class="csv-tags-free" id="csv-tags-free"
                   placeholder="Type and press Enter to add a tag"
@@ -2067,7 +2080,7 @@ function _csvWizardStep2(existing) {
            <div class="csv-tags-available" id="csv-tags-available"></div>
          </div>`
       : `<input type="text" id="csv-ff-${f.id}-val" placeholder="Fixed value"
-                value="${esc(fixVal)}" style="${mode==="column"?"display:none":""}">`;
+                value="${esc(fixVal)}" style="${fixedStyle}">`;
 
     return `
       <div class="field-map-row">
@@ -2221,7 +2234,6 @@ function _collectFieldMapping() {
 
 function csvWizToStep3() {
   const existing = csvState._wizardExisting;
-  const d = existing || {};
   const fields = _collectFieldMapping();
   const account = (document.getElementById("csv-wiz-account") || {}).value || "";
 
@@ -2279,7 +2291,7 @@ function csvAutoId() {
   const nameEl = document.getElementById("csv-wiz-name");
   const idEl   = document.getElementById("csv-wiz-id");
   if (!nameEl || !idEl) return;
-  idEl.value = nameEl.value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  idEl.value = nameEl.value.toLowerCase().replaceAll(/[^a-z0-9]+/g, "-").replaceAll(/^-|-$/g, "");
 }
 
 async function csvWizSave() {
@@ -2330,7 +2342,7 @@ async function init() {
     const sched = await api("GET", "/scheduler");
     state.schedulerEnabled = sched.enabled;
     updateSchedulerIndicator(sched.enabled, sched.time);
-  } catch (_) {}
+  } catch {}
   // Pre-load fields list in background so CSV tab is instant
   loadCsvFields().catch(() => {});
 }

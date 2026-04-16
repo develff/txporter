@@ -263,15 +263,15 @@ def sync_one(account_id):
 def confirm_one(account_id):
     """Confirm TAN approval for a pending sync.
 
-    Query params:
-      ?dry_run=true        — return raw parsed transactions, no forwarding to targets
-      ?export_format=json  — return raw transactions as JSON (for browser download)
-      ?export_format=csv   — return transactions as CSV text (for browser download)
+    Optional body: { "dry_run": true, "export_format": "json"|"csv" }
+      dry_run       — return raw parsed transactions, no forwarding to targets
+      export_format — return raw transactions as JSON or CSV (for browser download)
     """
     if account_id not in _pending_syncs:
         return jsonify({"error": f"No pending sync for '{account_id}'"}), 404
-    dry_run = request.args.get("dry_run", "").lower() == "true"
-    export_format = request.args.get("export_format", "").lower() or None
+    body = request.get_json(force=True, silent=True) or {}
+    dry_run = bool(body.get("dry_run", False))
+    export_format = (body.get("export_format") or "").lower() or None
     return jsonify(complete_sync(account_id, dry_run=dry_run, export_format=export_format))
 
 
