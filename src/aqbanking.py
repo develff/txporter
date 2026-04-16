@@ -353,5 +353,4 @@ class AqBankingClient:
 
     def _fetch_paypal(self, days: int) -> list:
         """Fetch transactions via AqBanking PayPal backend."""
-        # TODO: implement PayPal fetch
         raise NotImplementedError("PayPal backend not yet implemented")

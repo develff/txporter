@@ -782,8 +782,19 @@ def get_tags():
 @app.route("/status", methods=["GET"])
 def status():
     """Return last sync status for all accounts."""
-    # TODO: implement persistent status tracking
-    return jsonify({"status": "not implemented yet"})
+    result = {}
+    for account in config["accounts"]:
+        account_id = account["id"]
+        entry = {"id": account_id, "name": account.get("name", account_id)}
+        if account.get("last_sync_at"):
+            entry["last_sync_at"] = account["last_sync_at"]
+            entry["last_sync_status"] = account.get("last_sync_status")
+            if account.get("last_sync_error"):
+                entry["last_sync_error"] = account["last_sync_error"]
+        if account_id in _pending_syncs:
+            entry["pending"] = True
+        result[account_id] = entry
+    return jsonify(result)
 
 
 def start_sync(account: dict, from_date: str = None, to_date: str = None, days: int = 30,

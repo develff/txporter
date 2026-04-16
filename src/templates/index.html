@@ -305,7 +305,7 @@
 
     /* ── Disabled account ── */
     .card.disabled { opacity: .55; }
-    .badge-disabled { background: #f1f5f9; color: #64748b; }
+    .badge-disabled { background: #f1f5f9; color: #475569; }
 
     /* ── Toggle switch ── */
     .toggle { display: inline-flex; align-items: center; cursor: pointer; }
@@ -1695,9 +1695,12 @@ function wizardStepDuplicate(r) {
 function wizardProgress(step) {
   // steps: 0=credentials, 1=tan mode, 2=confirm, 3=done
   const steps = ["Credentials", "TAN Method", "Confirm", "Done"];
-  return `<div class="wizard-steps">${steps.map((s, i) =>
-    `<div class="wizard-step ${i < step ? "done" : i === Math.floor(step) ? "active" : ""}">${s}</div>`
-  ).join("")}</div>`;
+  return `<div class="wizard-steps">${steps.map((s, i) => {
+    let cls = "";
+    if (i < step) { cls = "done"; }
+    else if (i === Math.floor(step)) { cls = "active"; }
+    return `<div class="wizard-step ${cls}">${s}</div>`;
+  }).join("")}</div>`;
 }
 
 // ── Modal helpers ──────────────────────────────────────────────────────────────
@@ -1912,7 +1915,9 @@ function openCsvEditWizard(mappingId) {
 function _csvWizardProgress(step) {
   const steps = ["Configure", "Map Fields", "Save"];
   return `<div class="wizard-steps">${steps.map((s, i) => {
-    const cls = i < step ? "done" : i === step ? "active" : "";
+    let cls = "";
+    if (i < step) { cls = "done"; }
+    else if (i === step) { cls = "active"; }
     return `<div class="wizard-step ${cls}">${s}</div>`;
   }).join("")}</div>`;
 }

@@ -570,7 +570,9 @@ class TestStatusEndpoint:
     def test_status_returns_200(self, sync_client):
         resp = sync_client.get("/status")
         assert resp.status_code == 200
-        assert "status" in resp.get_json()
+        data = resp.get_json()
+        assert "consorsbank" in data
+        assert data["consorsbank"]["id"] == "consorsbank"
 
 
 class TestSyncAllCallsStartSync:
