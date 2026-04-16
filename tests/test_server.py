@@ -1,5 +1,6 @@
 """Tests for sync REST endpoints."""
 
+import io
 import json
 import pytest
 from unittest.mock import patch, MagicMock
@@ -469,3 +470,434 @@ class TestRunScheduledSync:
              patch("src.server._save_last_sync_error"):
             server_mod._run_scheduled_sync()
         mock_webhook.assert_called_once_with("http://hook.example.com", "consorsbank", "fail")
+
+    def test_skips_account_without_aqbanking_id(self, sync_client):
+        import src.server as server_mod
+        server_mod.config["accounts"].append({"id": "noid", "name": "noid"})
+        try:
+            with patch("src.server.aqbanking_is_busy", return_value=False), \
+                 patch("src.server.start_sync", return_value={"status": "ok"}) as mock_sync:
+                server_mod._run_scheduled_sync()
+            # start_sync only called for the account with aqbanking_id
+            assert mock_sync.call_count == 1
+        finally:
+            server_mod.config["accounts"] = [
+                a for a in server_mod.config["accounts"] if a["id"] != "noid"
+            ]
+
+    def test_skips_disabled_account(self, sync_client):
+        import src.server as server_mod
+        server_mod.config["accounts"][0]["enabled"] = False
+        try:
+            with patch("src.server.aqbanking_is_busy", return_value=False), \
+                 patch("src.server.start_sync") as mock_sync:
+                server_mod._run_scheduled_sync()
+            mock_sync.assert_not_called()
+        finally:
+            server_mod.config["accounts"][0].pop("enabled", None)
+
+    def test_calls_start_pending_timeout_on_pending(self, sync_client):
+        import src.server as server_mod
+        with patch("src.server.aqbanking_is_busy", return_value=False), \
+             patch("src.server.start_sync", return_value={"status": "pending"}), \
+             patch("src.server._start_pending_timeout") as mock_timeout:
+            server_mod._run_scheduled_sync()
+        mock_timeout.assert_called_once()
+
+
+class TestUserTz:
+    def test_valid_timezone_returns_zoneinfo(self):
+        from src.server import _user_tz
+        from zoneinfo import ZoneInfo
+        tz = _user_tz({"timezone": "Europe/Berlin"})
+        assert tz == ZoneInfo("Europe/Berlin")
+
+    def test_empty_timezone_defaults_to_utc(self):
+        from src.server import _user_tz
+        from zoneinfo import ZoneInfo
+        assert _user_tz({}) == ZoneInfo("UTC")
+
+    def test_invalid_timezone_falls_back_to_utc(self):
+        from src.server import _user_tz
+        from zoneinfo import ZoneInfo
+        # ZoneInfo raises KeyError for unknown zones — must fall back silently
+        tz = _user_tz({"timezone": "NotReal/Zone"})
+        assert tz == ZoneInfo("UTC")
+
+
+class TestComputeNextRun:
+    def test_returns_none_when_disabled(self):
+        from src.server import _compute_next_run
+        assert _compute_next_run({"enabled": False, "time": "20:00"}) is None
+
+    def test_returns_none_when_no_time(self):
+        from src.server import _compute_next_run
+        assert _compute_next_run({"enabled": True}) is None
+
+    def test_returns_iso_string_when_enabled(self):
+        from src.server import _compute_next_run
+        result = _compute_next_run({"enabled": True, "time": "23:59"})
+        assert result is not None and "T" in result
+
+    def test_returns_none_on_exception(self):
+        from src.server import _compute_next_run
+        # non-integer time components → ValueError inside → returns None
+        result = _compute_next_run({"enabled": True, "time": "bad:time"})
+        assert result is None
+
+
+class TestStatusEndpoint:
+    def test_status_returns_200(self, sync_client):
+        resp = sync_client.get("/status")
+        assert resp.status_code == 200
+        assert "status" in resp.get_json()
+
+
+class TestSyncAllCallsStartSync:
+    def test_sync_all_calls_start_sync_for_enabled_account(self, sync_client):
+        import src.server as server_mod
+        with patch("src.server.AqBankingClient") as MockClient, \
+             patch("src.server._forward_to_targets", return_value={}):
+            mock_inst = MockClient.return_value
+            mock_inst.start_fetch.return_value = {"status": "ok", "transactions": []}
+            resp = sync_client.post("/sync", data=json.dumps({}), content_type="application/json")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert "consorsbank" in data
+        assert data["consorsbank"]["status"] == "ok"
+
+
+class TestStartSync:
+    def test_fints_pending_path(self, sync_client):
+        import src.server as server_mod
+        with patch("src.server.AqBankingClient") as MockClient:
+            mock_inst = MockClient.return_value
+            mock_inst.start_fetch.return_value = {"status": "pending"}
+            result = server_mod.start_sync(
+                {"id": "consorsbank", "type": "fints", "aqbanking_id": 9}
+            )
+        assert result["status"] == "pending"
+        server_mod._pending_syncs.pop("consorsbank", None)
+
+    def test_fints_export_format_returns_transactions(self, sync_client):
+        import src.server as server_mod
+        with patch("src.server.AqBankingClient") as MockClient:
+            mock_inst = MockClient.return_value
+            mock_inst.start_fetch.return_value = {"status": "ok", "transactions": [{"t": 1}]}
+            result = server_mod.start_sync(
+                {"id": "consorsbank", "type": "fints", "aqbanking_id": 9},
+                export_format="json",
+            )
+        assert result["status"] == "ok"
+        assert result["transactions"] == [{"t": 1}]
+
+    def test_non_fints_path(self, sync_client):
+        import src.server as server_mod
+        with patch("src.server.AqBankingClient") as MockClient, \
+             patch("src.server._forward_to_targets", return_value={}):
+            mock_inst = MockClient.return_value
+            mock_inst.fetch_transactions.return_value = []
+            result = server_mod.start_sync({"id": "paypal", "type": "paypal"})
+        assert result["status"] == "ok"
+
+    def test_non_fints_export_format(self, sync_client):
+        import src.server as server_mod
+        with patch("src.server.AqBankingClient") as MockClient:
+            mock_inst = MockClient.return_value
+            mock_inst.fetch_transactions.return_value = [{"t": 2}]
+            result = server_mod.start_sync(
+                {"id": "paypal", "type": "paypal"}, export_format="csv"
+            )
+        assert result["transactions"] == [{"t": 2}]
+
+    def test_exception_returns_error(self, sync_client):
+        import src.server as server_mod
+        with patch("src.server.AqBankingClient", side_effect=Exception("boom")):
+            result = server_mod.start_sync({"id": "consorsbank", "type": "fints"})
+        assert result["status"] == "error"
+
+
+class TestCompleteSync:
+    def test_exception_returns_error(self):
+        import src.server as server_mod
+        mock_client = MagicMock()
+        mock_client.complete_fetch.side_effect = Exception("network error")
+        server_mod._pending_syncs["acc1"] = {"client": mock_client, "account": {"id": "acc1"}}
+        result = server_mod.complete_sync("acc1")
+        assert result["status"] == "error"
+        assert "network error" in result["message"]
+
+
+class TestSaveLastSync:
+    def test_exception_is_swallowed(self):
+        import src.server as server_mod
+        with patch("src.server.bank_setup.load_config", side_effect=Exception("disk error")):
+            server_mod._save_last_sync("acc1")  # must not raise
+
+
+class TestForwardToTargetsFirefly:
+    def test_calls_firefly_import(self):
+        import src.server as server_mod
+        orig_targets = server_mod.config["targets"].copy()
+        server_mod.config["targets"] = {
+            "firefly": {"enabled": True, "url": "https://ff.example.com", "token": "t"},
+        }
+        mock_ff = MagicMock()
+        mock_ff.import_transactions.return_value = {"found": 1, "imported": 1, "skipped": 0}
+        # server.py does `from firefly import FireflyClient` locally — patch that module
+        with patch("firefly.FireflyClient", return_value=mock_ff):
+            stats = server_mod._forward_to_targets(
+                [{"external_id": "x"}], {"id": "acc", "name": "acc"}
+            )
+        assert stats.get("imported") == 1
+        server_mod.config["targets"] = orig_targets
+
+
+class TestCsvEndpoints:
+    def test_csv_preview_invalid_skip_rows(self, sync_client):
+        data = b"a,b\n1,2"
+        resp = sync_client.post(
+            "/csv/preview",
+            data={"file": (io.BytesIO(data), "test.csv"), "skip_rows": "notanint"},
+            content_type="multipart/form-data",
+        )
+        assert resp.status_code == 400
+        assert "skip_rows" in resp.get_json()["error"]
+
+    def test_csv_preview_exception(self, sync_client):
+        with patch("src.csv_import.preview_csv", side_effect=Exception("parse error")):
+            resp = sync_client.post(
+                "/csv/preview",
+                data={"file": (io.BytesIO(b"a,b\n1,2"), "test.csv")},
+                content_type="multipart/form-data",
+            )
+        assert resp.status_code == 400
+
+    def test_csv_import_no_file_returns_400(self, sync_client):
+        resp = sync_client.post(
+            "/csv/import",
+            data={"mapping": '{"id":"m","account_name":"Test"}'},
+            content_type="multipart/form-data",
+        )
+        assert resp.status_code == 400
+
+    def test_csv_import_invalid_json_mapping(self, sync_client):
+        resp = sync_client.post(
+            "/csv/import",
+            data={"file": (io.BytesIO(b"a,b\n1,2"), "test.csv"), "mapping": "{bad json}"},
+            content_type="multipart/form-data",
+        )
+        assert resp.status_code == 400
+        assert "valid JSON" in resp.get_json()["error"]
+
+    def test_csv_import_parse_error(self, sync_client):
+        with patch("src.csv_import.parse_and_map", side_effect=Exception("parse fail")):
+            resp = sync_client.post(
+                "/csv/import",
+                data={
+                    "file": (io.BytesIO(b"a,b\n1,2"), "test.csv"),
+                    "mapping": '{"id":"m","account_name":"Test"}',
+                },
+                content_type="multipart/form-data",
+            )
+        assert resp.status_code == 400
+
+    def test_csv_fields_returns_list(self, sync_client):
+        resp = sync_client.get("/csv/fields")
+        assert resp.status_code == 200
+        fields = resp.get_json()
+        assert any(f["id"] == "date" for f in fields)
+
+
+class TestSetupEndpointsExtra:
+    def test_setup_tanmode_exception_returns_500(self, sync_client):
+        import src.server as server_mod
+        mock_session = MagicMock()
+        mock_session.step2_set_tanmode.side_effect = RuntimeError("PTY error")
+        server_mod._pending_setups["tid1"] = mock_session
+        try:
+            resp = sync_client.post(
+                "/setup/tid1/tanmode",
+                data=json.dumps({"tan_mode": 7940}),
+                content_type="application/json",
+            )
+        finally:
+            server_mod._pending_setups.pop("tid1", None)
+        assert resp.status_code == 500
+
+    def test_setup_select_account_missing_aqbanking_id_returns_400(self, sync_client):
+        import src.server as server_mod
+        server_mod._pending_setups["tid2"] = MagicMock()
+        try:
+            resp = sync_client.post(
+                "/setup/tid2/selectaccount",
+                data=json.dumps({}),
+                content_type="application/json",
+            )
+        finally:
+            server_mod._pending_setups.pop("tid2", None)
+        assert resp.status_code == 400
+        assert "aqbanking_id" in resp.get_json()["error"]
+
+    def test_setup_select_account_exception_returns_500(self, sync_client):
+        import src.server as server_mod
+        mock_session = MagicMock()
+        mock_session.select_account.side_effect = RuntimeError("selection error")
+        server_mod._pending_setups["tid3"] = mock_session
+        try:
+            resp = sync_client.post(
+                "/setup/tid3/selectaccount",
+                data=json.dumps({"aqbanking_id": 9}),
+                content_type="application/json",
+            )
+        finally:
+            server_mod._pending_setups.pop("tid3", None)
+        assert resp.status_code == 500
+
+    def test_setup_select_account_success(self, sync_client):
+        import src.server as server_mod
+        mock_session = MagicMock()
+        mock_session.select_account.return_value = {"status": "ok", "account": "acc"}
+        server_mod._pending_setups["tid4"] = mock_session
+        try:
+            with patch("src.server.bank_setup.load_config",
+                       return_value={"accounts": [], "targets": {}}):
+                resp = sync_client.post(
+                    "/setup/tid4/selectaccount",
+                    data=json.dumps({"aqbanking_id": 9}),
+                    content_type="application/json",
+                )
+        finally:
+            server_mod._pending_setups.pop("tid4", None)
+        assert resp.status_code == 200
+        assert resp.get_json()["status"] == "ok"
+
+
+class TestAqBankingAccountsEndpoints:
+    def test_list_aqbanking_accounts(self, sync_client):
+        import src.server as server_mod
+        list_output = (
+            "Account: DKB Girokonto\n"
+            "  Bank code: 12030000\n"
+            "  Account number: 1234567890\n"
+            "  AqBanking ID: 1\n"
+        )
+        mock_result = MagicMock()
+        mock_result.stdout = list_output
+        with patch("subprocess.run", return_value=mock_result), \
+             patch("src.server.bank_setup.load_config",
+                   return_value={"accounts": [], "targets": {}}), \
+             patch("src.server.bank_setup._parse_listaccounts", return_value=[
+                 {"aqbanking_id": 1, "account_number": "1234567890", "bank_code": "12030000"}
+             ]):
+            resp = sync_client.get("/aqbanking/accounts")
+        assert resp.status_code == 200
+        accounts = resp.get_json()
+        assert isinstance(accounts, list)
+
+    def test_import_aqbanking_account_no_name_returns_400(self, sync_client):
+        resp = sync_client.post(
+            "/aqbanking/accounts/1/import",
+            data=json.dumps({}),
+            content_type="application/json",
+        )
+        assert resp.status_code == 400
+        assert "name" in resp.get_json()["error"]
+
+    def test_import_aqbanking_account_not_found_returns_404(self, sync_client):
+        mock_result = MagicMock()
+        mock_result.stdout = ""
+        with patch("subprocess.run", return_value=mock_result), \
+             patch("src.server.bank_setup._parse_listaccounts", return_value=[]):
+            resp = sync_client.post(
+                "/aqbanking/accounts/99/import",
+                data=json.dumps({"name": "My Account"}),
+                content_type="application/json",
+            )
+        assert resp.status_code == 404
+
+    def test_import_aqbanking_account_already_configured_returns_409(self, sync_client):
+        mock_result = MagicMock()
+        mock_result.stdout = ""
+        aq_accounts = [{"aqbanking_id": 1, "account_number": "123", "bank_code": "12030000"}]
+        cfg = {
+            "accounts": [
+                {"id": "existing", "account_number": "123", "bank_code_aq": "12030000"}
+            ],
+            "targets": {},
+        }
+        with patch("subprocess.run", return_value=mock_result), \
+             patch("src.server.bank_setup._parse_listaccounts", return_value=aq_accounts), \
+             patch("src.server.bank_setup.load_config", return_value=cfg):
+            resp = sync_client.post(
+                "/aqbanking/accounts/1/import",
+                data=json.dumps({"name": "My Account"}),
+                content_type="application/json",
+            )
+        assert resp.status_code == 409
+
+    def test_import_aqbanking_account_no_same_bank_returns_400(self, sync_client):
+        mock_result = MagicMock()
+        mock_result.stdout = ""
+        aq_accounts = [{"aqbanking_id": 1, "account_number": "999", "bank_code": "99999999"}]
+        cfg = {"accounts": [], "targets": {}}
+        with patch("subprocess.run", return_value=mock_result), \
+             patch("src.server.bank_setup._parse_listaccounts", return_value=aq_accounts), \
+             patch("src.server.bank_setup.load_config", return_value=cfg):
+            resp = sync_client.post(
+                "/aqbanking/accounts/1/import",
+                data=json.dumps({"name": "My Account"}),
+                content_type="application/json",
+            )
+        assert resp.status_code == 400
+        assert "full setup" in resp.get_json()["error"]
+
+    def test_import_aqbanking_account_duplicate_id_returns_409(self, sync_client):
+        mock_result = MagicMock()
+        mock_result.stdout = ""
+        aq_accounts = [{"aqbanking_id": 2, "account_number": "888", "bank_code": "12030000"}]
+        same_bank = {
+            "id": "dkb", "type": "fints", "blz": "12030000", "url": "u",
+            "login": "l", "hbci_version": 300, "bank_code_aq": "12030000",
+        }
+        # Account with id "dkb-depot" already exists → duplicate
+        existing = {**same_bank, "id": "dkb-depot", "account_number": "000"}
+        cfg = {"accounts": [same_bank, existing], "targets": {}}
+        with patch("subprocess.run", return_value=mock_result), \
+             patch("src.server.bank_setup._parse_listaccounts", return_value=aq_accounts), \
+             patch("src.server.bank_setup.load_config", return_value=cfg):
+            resp = sync_client.post(
+                "/aqbanking/accounts/2/import",
+                data=json.dumps({"name": "DKB Depot", "id": "dkb-depot"}),
+                content_type="application/json",
+            )
+        assert resp.status_code == 409
+
+    def test_import_aqbanking_account_success_with_optional_fields(self, sync_client):
+        mock_result = MagicMock()
+        mock_result.stdout = ""
+        aq_accounts = [{
+            "aqbanking_id": 2, "account_number": "888", "bank_code": "12030000",
+            "iban": "DE12345678901234567890", "account_type_label": "Depot",
+        }]
+        same_bank = {
+            "id": "dkb", "type": "fints", "blz": "12030000", "url": "u",
+            "login": "l", "hbci_version": 300, "bank_code_aq": "12030000",
+            "tan_mode": 7940,
+        }
+        cfg = {"accounts": [same_bank], "targets": {}}
+        with patch("subprocess.run", return_value=mock_result), \
+             patch("src.server.bank_setup._parse_listaccounts", return_value=aq_accounts), \
+             patch("src.server.bank_setup.load_config", return_value=cfg), \
+             patch("src.server.bank_setup.save_config"):
+            resp = sync_client.post(
+                "/aqbanking/accounts/2/import",
+                data=json.dumps({"name": "DKB Depot"}),
+                content_type="application/json",
+            )
+        assert resp.status_code == 200
+        account = resp.get_json()["account"]
+        assert account["aqbanking_id"] == 2
+        assert account["tan_mode"] == 7940
+        assert account["iban"] == "DE12345678901234567890"
+        assert account["account_type_label"] == "Depot"
