@@ -678,13 +678,14 @@ def csv_fields():
 def csv_preview():
     """Upload a CSV file and return its headers + first 5 data rows.
 
-    Form fields: file (required), delimiter, encoding, skip_rows
+    Form fields: file (required), delimiter, encoding, skip_rows, join_multiline
     """
     file = request.files.get("file")
     if not file:
         return jsonify({"error": "No file uploaded"}), 400
     delimiter = request.form.get("delimiter", ",")
     encoding = request.form.get("encoding", "utf-8")
+    join_multiline = request.form.get("join_multiline", "false").lower() == "true"
     try:
         skip_rows = int(request.form.get("skip_rows", 0))
     except ValueError:
@@ -692,7 +693,7 @@ def csv_preview():
     from csv_import import preview_csv
     try:
         result = preview_csv(file.read(), delimiter=delimiter, encoding=encoding,
-                             skip_rows=skip_rows)
+                             skip_rows=skip_rows, join_multiline=join_multiline)
     except Exception as e:
         return jsonify({"error": str(e)}), 400
     return jsonify(result)

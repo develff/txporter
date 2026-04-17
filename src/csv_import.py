@@ -52,19 +52,81 @@ def save_mappings(mappings: list) -> None:
         json.dump(mappings, f, indent=2, ensure_ascii=False)
 
 
-def preview_csv(file_bytes: bytes, delimiter: str = ",", encoding: str = "utf-8",
-                skip_rows: int = 0) -> dict:
-    """Parse CSV bytes and return headers + first 5 data rows."""
+def _open_csv(file_bytes: bytes, encoding: str, delimiter: str,
+              skip_rows: int) -> tuple:
+    """Decode bytes, skip rows, read header row, return (headers, StringIO).
+
+    Uses csv.reader for skipping so quoted multiline fields are handled
+    correctly. Strips UTF-8 BOM from the first header field. The returned
+    StringIO is positioned immediately after the header row.
+    Returns ([], empty StringIO) when the file has fewer rows than expected.
+    """
     text = file_bytes.decode(encoding, errors="replace")
-    lines = text.splitlines()
-    data_text = "\n".join(lines[skip_rows:])
-    reader = csv.DictReader(io.StringIO(data_text), delimiter=delimiter)
-    headers = list(reader.fieldnames or [])
+    f = io.StringIO(text)
+    raw = csv.reader(f, delimiter=delimiter)
+    for _ in range(skip_rows):
+        try:
+            next(raw)
+        except StopIteration:
+            return [], io.StringIO("")
+    try:
+        headers = next(raw)
+    except StopIteration:
+        return [], io.StringIO("")
+    if headers and headers[0].startswith("\ufeff"):
+        headers[0] = headers[0][1:]
+    return headers, f
+
+
+def _clean_row(row: dict) -> dict:
+    """Drop the None restkey entry DictReader inserts for extra columns."""
+    return {k: (v if v is not None else "") for k, v in row.items() if k is not None}
+
+
+def _iter_rows(f: io.StringIO, headers: list, delimiter: str,
+               join_multiline: bool = False):
+    """Yield cleaned row dicts from f starting at its current position.
+
+    join_multiline: when True, rows with fewer fields than the header are
+    treated as continuations of the preceding row's last field (handles CSV
+    exports where multi-line fields are not quoted).
+    """
+    n = len(headers)
+    if not join_multiline:
+        for row in csv.DictReader(f, fieldnames=headers, delimiter=delimiter):
+            yield _clean_row(row)
+        return
+
+    raw = csv.reader(f, delimiter=delimiter)
+    buf = None
+    for fields in raw:
+        if buf is None:
+            if len(fields) >= n:
+                yield dict(zip(headers, fields[:n]))
+            elif fields and any(v.strip() for v in fields):
+                buf = list(fields)
+        else:
+            if fields:
+                buf[-1] = buf[-1] + "\n" + fields[0]
+                buf.extend(fields[1:])
+            if len(buf) >= n:
+                yield dict(zip(headers, buf[:n]))
+                buf = None
+    if buf and any(v.strip() for v in buf):
+        while len(buf) < n:
+            buf.append("")
+        yield dict(zip(headers, buf[:n]))
+
+
+def preview_csv(file_bytes: bytes, delimiter: str = ",", encoding: str = "utf-8",
+                skip_rows: int = 0, join_multiline: bool = False) -> dict:
+    """Parse CSV bytes and return headers + first 5 data rows."""
+    headers, f = _open_csv(file_bytes, encoding, delimiter, skip_rows)
     rows = []
-    for i, row in enumerate(reader):
+    for i, row in enumerate(_iter_rows(f, headers, delimiter, join_multiline)):
         if i >= 5:
             break
-        rows.append(dict(row))
+        rows.append(row)
     return {"headers": headers, "rows": rows}
 
 
@@ -124,17 +186,15 @@ def parse_and_map(file_bytes: bytes, mapping: dict) -> list:
     delimiter = mapping.get("delimiter", ",")
     encoding = mapping.get("encoding", "utf-8")
     skip_rows = int(mapping.get("skip_rows", 0))
+    join_multiline = bool(mapping.get("join_multiline", False))
     account_name = mapping.get("account_name", "")
     mapping_id = mapping.get("id", "csv")
     fields = mapping.get("fields", {})
 
-    text = file_bytes.decode(encoding, errors="replace")
-    lines = text.splitlines()
-    data_text = "\n".join(lines[skip_rows:])
-    reader = csv.DictReader(io.StringIO(data_text), delimiter=delimiter)
+    _headers, f = _open_csv(file_bytes, encoding, delimiter, skip_rows)
 
     transactions = []
-    for row in reader:
+    for row in _iter_rows(f, _headers, delimiter, join_multiline):
         if not any(v.strip() for v in row.values() if v):
             continue  # skip blank rows
 
