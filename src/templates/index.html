@@ -2125,6 +2125,13 @@ function _csvWizardStep2(existing) {
       </div>`;
   }).join("");
 
+  const previewHtml = csvState.previewHeaders.length
+    ? `<details style="margin-bottom:12px">
+        <summary style="cursor:pointer;font-size:13px;color:var(--muted);user-select:none">▶ Data preview (${csvState.previewRows.length} rows)</summary>
+        ${_csvPreviewTable(csvState.previewHeaders, csvState.previewRows)}
+      </details>`
+    : "";
+
   showModal(`
     <div class="modal-header">
       <div><div class="modal-title">${existing ? "Edit Mapping" : "New Mapping"}</div>
@@ -2133,6 +2140,7 @@ function _csvWizardStep2(existing) {
     </div>
     ${_csvWizardProgress(1)}
     <div class="modal-body" style="max-height:65vh;overflow-y:auto">
+      ${previewHtml}
       <div class="form-group">
         <label>Firefly Asset Account Name</label>
         <input type="text" id="csv-wiz-account" placeholder="e.g. Crypto.com Visa"
