@@ -88,10 +88,16 @@ def _iter_rows_simple(f: io.StringIO, headers: list, delimiter: str):
         yield _clean_row(row)
 
 
-def _flush_buf(buf: list, n: int, headers: list):
+def _flush_buf(buf: list, n: int, headers: list) -> dict:
     while len(buf) < n:
         buf.append("")
     return dict(zip(headers, buf[:n]))
+
+
+def _append_continuation(buf: list, fields: list) -> list:
+    buf[-1] = buf[-1] + "\n" + fields[0]
+    buf.extend(fields[1:])
+    return buf
 
 
 def _iter_rows_multiline(f: io.StringIO, headers: list, delimiter: str):
@@ -99,20 +105,25 @@ def _iter_rows_multiline(f: io.StringIO, headers: list, delimiter: str):
     raw = csv.reader(f, delimiter=delimiter)
     buf = None
     for fields in raw:
-        if buf is None:
-            if len(fields) >= n:
-                yield dict(zip(headers, fields[:n]))
-            elif fields and any(v.strip() for v in fields):
-                buf = list(fields)
-        else:
-            if fields:
-                buf[-1] = buf[-1] + "\n" + fields[0]
-                buf.extend(fields[1:])
-            if len(buf) >= n:
-                yield _flush_buf(buf, n, headers)
-                buf = None
+        buf, row = _process_multiline_fields(fields, buf, n, headers)
+        if row is not None:
+            yield row
     if buf and any(v.strip() for v in buf):
         yield _flush_buf(buf, n, headers)
+
+
+def _process_multiline_fields(fields, buf, n, headers):
+    if buf is None:
+        if len(fields) >= n:
+            return None, dict(zip(headers, fields[:n]))
+        if fields and any(v.strip() for v in fields):
+            return list(fields), None
+        return None, None
+    if fields:
+        buf = _append_continuation(buf, fields)
+    if len(buf) >= n:
+        return None, _flush_buf(buf, n, headers)
+    return buf, None
 
 
 def _iter_rows(f: io.StringIO, headers: list, delimiter: str,
