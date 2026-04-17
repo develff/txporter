@@ -83,20 +83,19 @@ def _clean_row(row: dict) -> dict:
     return {k: (v if v is not None else "") for k, v in row.items() if k is not None}
 
 
-def _iter_rows(f: io.StringIO, headers: list, delimiter: str,
-               join_multiline: bool = False):
-    """Yield cleaned row dicts from f starting at its current position.
+def _iter_rows_simple(f: io.StringIO, headers: list, delimiter: str):
+    for row in csv.DictReader(f, fieldnames=headers, delimiter=delimiter):
+        yield _clean_row(row)
 
-    join_multiline: when True, rows with fewer fields than the header are
-    treated as continuations of the preceding row's last field (handles CSV
-    exports where multi-line fields are not quoted).
-    """
+
+def _flush_buf(buf: list, n: int, headers: list):
+    while len(buf) < n:
+        buf.append("")
+    return dict(zip(headers, buf[:n]))
+
+
+def _iter_rows_multiline(f: io.StringIO, headers: list, delimiter: str):
     n = len(headers)
-    if not join_multiline:
-        for row in csv.DictReader(f, fieldnames=headers, delimiter=delimiter):
-            yield _clean_row(row)
-        return
-
     raw = csv.reader(f, delimiter=delimiter)
     buf = None
     for fields in raw:
@@ -110,12 +109,24 @@ def _iter_rows(f: io.StringIO, headers: list, delimiter: str,
                 buf[-1] = buf[-1] + "\n" + fields[0]
                 buf.extend(fields[1:])
             if len(buf) >= n:
-                yield dict(zip(headers, buf[:n]))
+                yield _flush_buf(buf, n, headers)
                 buf = None
     if buf and any(v.strip() for v in buf):
-        while len(buf) < n:
-            buf.append("")
-        yield dict(zip(headers, buf[:n]))
+        yield _flush_buf(buf, n, headers)
+
+
+def _iter_rows(f: io.StringIO, headers: list, delimiter: str,
+               join_multiline: bool = False):
+    """Yield cleaned row dicts from f starting at its current position.
+
+    join_multiline: when True, rows with fewer fields than the header are
+    treated as continuations of the preceding row's last field (handles CSV
+    exports where multi-line fields are not quoted).
+    """
+    if join_multiline:
+        yield from _iter_rows_multiline(f, headers, delimiter)
+    else:
+        yield from _iter_rows_simple(f, headers, delimiter)
 
 
 def preview_csv(file_bytes: bytes, delimiter: str = ",", encoding: str = "utf-8",
