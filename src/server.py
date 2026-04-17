@@ -3,16 +3,17 @@ txporter - REST API server
 Exposes endpoints to trigger transaction sync from financial accounts.
 """
 
+import json
 import re
 import threading
 import time as _time
 import uuid
 from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from zoneinfo import ZoneInfo
 
 import requests as _requests
 from flask import Flask, jsonify, render_template, request
-from aqbanking import AqBankingClient
+from aqbanking import AqBankingClient, aqbanking_is_busy
 from config import load_config
 import setup as bank_setup
 import logging
@@ -21,7 +22,10 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024  # 16 MB cap for CSV uploads
 config = load_config()
+
+_ISO_DATETIME_FMT = "%Y-%m-%dT%H:%M:%SZ"
 
 # Stores running aqbanking processes waiting for TAN confirmation
 # { account_id: {"proc": Popen, "client": AqBankingClient, "account": dict} }
@@ -48,7 +52,7 @@ def _user_tz(sched_cfg: dict) -> ZoneInfo:
     tz_name = sched_cfg.get("timezone") or "UTC"
     try:
         return ZoneInfo(tz_name)
-    except (ZoneInfoNotFoundError, KeyError):
+    except KeyError:
         logger.warning(f"Timezone '{tz_name}' not found (tzdata missing?), falling back to UTC")
         return ZoneInfo("UTC")
 
@@ -76,7 +80,7 @@ def _fire_webhook(webhook_url: str, account_id: str, error: str) -> None:
         _requests.post(webhook_url, json={
             "account": account_id,
             "error": error,
-            "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "timestamp": datetime.now(timezone.utc).strftime(_ISO_DATETIME_FMT),
         }, timeout=10)
         logger.info(f"Webhook fired for {account_id}: {error}")
     except Exception as e:
@@ -98,10 +102,13 @@ def _start_pending_timeout(account_id: str, webhook_url: str) -> None:
 
 def _run_scheduled_sync() -> None:
     """Run sync for all enabled, connected accounts (called by scheduler thread)."""
+    if aqbanking_is_busy():
+        logger.warning("Scheduled sync skipped — aqbanking-cli already running")
+        return
     logger.info("Running scheduled sync")
     sched_cfg = get_scheduler_config()
     webhook_url = sched_cfg.get("webhook_url", "")
-    for account in list(config["accounts"]):
+    for account in config["accounts"]:
         if not account.get("aqbanking_id"):
             continue
         if account.get("enabled") is False:
@@ -183,6 +190,9 @@ def scheduler_post():
     webhook_url = (body.get("webhook_url") or "").strip()
     timezone_name = (body.get("timezone") or "UTC").strip()
 
+    if webhook_url and not webhook_url.startswith(("http://", "https://")):
+        return jsonify({"error": "webhook_url must start with http:// or https://"}), 400
+
     if enabled and time_str:
         if not re.match(r"^\d{2}:\d{2}$", time_str):
             return jsonify({"error": "time must be in HH:MM format"}), 400
@@ -191,7 +201,7 @@ def scheduler_post():
             return jsonify({"error": "time out of range"}), 400
     try:
         ZoneInfo(timezone_name)
-    except (ZoneInfoNotFoundError, KeyError):
+    except KeyError:
         return jsonify({"error": f"Unknown timezone '{timezone_name}'"}), 400
 
     cfg = bank_setup.load_config()
@@ -253,15 +263,15 @@ def sync_one(account_id):
 def confirm_one(account_id):
     """Confirm TAN approval for a pending sync.
 
-    Query params:
-      ?dry_run=true        — return raw parsed transactions, no forwarding to targets
-      ?export_format=json  — return raw transactions as JSON (for browser download)
-      ?export_format=csv   — return transactions as CSV text (for browser download)
+    Optional body: { "dry_run": true, "export_format": "json"|"csv" }
+      dry_run       — return raw parsed transactions, no forwarding to targets
+      export_format — return raw transactions as JSON or CSV (for browser download)
     """
     if account_id not in _pending_syncs:
         return jsonify({"error": f"No pending sync for '{account_id}'"}), 404
-    dry_run = request.args.get("dry_run", "").lower() == "true"
-    export_format = request.args.get("export_format", "").lower() or None
+    body = request.get_json(force=True, silent=True) or {}
+    dry_run = bool(body.get("dry_run", False))
+    export_format = (body.get("export_format") or "").lower() or None
     return jsonify(complete_sync(account_id, dry_run=dry_run, export_format=export_format))
 
 
@@ -657,11 +667,135 @@ def setup_select_account(setup_id):
     return jsonify(result)
 
 
+@app.route("/csv/fields", methods=["GET"])
+def csv_fields():
+    """List all Firefly fields available for CSV column mapping."""
+    from csv_import import FIREFLY_FIELDS
+    return jsonify(FIREFLY_FIELDS)
+
+
+@app.route("/csv/preview", methods=["POST"])
+def csv_preview():
+    """Upload a CSV file and return its headers + first 5 data rows.
+
+    Form fields: file (required), delimiter, encoding, skip_rows, join_multiline
+    """
+    file = request.files.get("file")
+    if not file:
+        return jsonify({"error": "No file uploaded"}), 400
+    delimiter = request.form.get("delimiter", ",")
+    encoding = request.form.get("encoding", "utf-8")
+    join_multiline = request.form.get("join_multiline", "false").lower() == "true"
+    try:
+        skip_rows = int(request.form.get("skip_rows", 0))
+    except ValueError:
+        return jsonify({"error": "skip_rows must be an integer"}), 400
+    from csv_import import preview_csv
+    try:
+        result = preview_csv(file.read(), delimiter=delimiter, encoding=encoding,
+                             skip_rows=skip_rows, join_multiline=join_multiline)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify(result)
+
+
+@app.route("/csv/import", methods=["POST"])
+def csv_import_route():
+    """Upload a CSV file and import transactions using the provided mapping.
+
+    Form fields: file (required), mapping (JSON string, required)
+    The mapping can be a full profile object or reference an existing mapping by id.
+    """
+    file = request.files.get("file")
+    if not file:
+        return jsonify({"error": "No file uploaded"}), 400
+    mapping_json = request.form.get("mapping")
+    if not mapping_json:
+        return jsonify({"error": "Field 'mapping' (JSON) is required"}), 400
+    try:
+        mapping = json.loads(mapping_json)
+    except ValueError:
+        return jsonify({"error": "Field 'mapping' is not valid JSON"}), 400
+
+    from csv_import import parse_and_map
+    try:
+        transactions = parse_and_map(file.read(), mapping)
+    except Exception as e:
+        logger.error("CSV parse error: %s", e)
+        return jsonify({"error": str(e)}), 400
+
+    account = {"name": mapping.get("account_name", "")}
+    stats = _forward_to_targets(transactions, account)
+    return jsonify({"status": "ok", "found": len(transactions), **stats})
+
+
+@app.route("/csv/mappings", methods=["GET"])
+def csv_mappings_list():
+    """List all saved CSV mapping profiles."""
+    from csv_import import load_mappings
+    return jsonify(load_mappings())
+
+
+@app.route("/csv/mappings", methods=["POST"])
+def csv_mappings_save():
+    """Save or update a CSV mapping profile.
+
+    Body must include 'id' and 'name'. Replaces any existing profile with the same id.
+    """
+    body = request.get_json(force=True, silent=True) or {}
+    if not body.get("id") or not body.get("name"):
+        return jsonify({"error": "Fields 'id' and 'name' are required"}), 400
+    from csv_import import load_mappings, save_mappings
+    mappings = load_mappings()
+    mappings = [body if m["id"] == body["id"] else m for m in mappings]
+    if not any(m["id"] == body["id"] for m in mappings):
+        mappings.append(body)
+    save_mappings(mappings)
+    return jsonify(body)
+
+
+@app.route("/csv/mappings/<mapping_id>", methods=["DELETE"])
+def csv_mappings_delete(mapping_id):
+    """Delete a saved CSV mapping profile by id."""
+    from csv_import import load_mappings, save_mappings
+    mappings = load_mappings()
+    updated = [m for m in mappings if m["id"] != mapping_id]
+    if len(updated) == len(mappings):
+        return jsonify({"error": f"No mapping found for '{mapping_id}'"}), 404
+    save_mappings(updated)
+    return jsonify({"status": "ok"})
+
+
+@app.route("/tags", methods=["GET"])
+def get_tags():
+    """Return all tag names from the configured Firefly III instance."""
+    firefly_cfg = config.get("targets", {}).get("firefly")
+    if not firefly_cfg or not firefly_cfg.get("enabled"):
+        return jsonify([])
+    from firefly import FireflyClient
+    try:
+        return jsonify(FireflyClient(firefly_cfg).get_tags())
+    except Exception as e:
+        logger.warning("Could not fetch tags from Firefly: %s", e)
+        return jsonify([])
+
+
 @app.route("/status", methods=["GET"])
 def status():
     """Return last sync status for all accounts."""
-    # TODO: implement persistent status tracking
-    return jsonify({"status": "not implemented yet"})
+    result = {}
+    for account in config["accounts"]:
+        account_id = account["id"]
+        entry = {"id": account_id, "name": account.get("name", account_id)}
+        if account.get("last_sync_at"):
+            entry["last_sync_at"] = account["last_sync_at"]
+            entry["last_sync_status"] = account.get("last_sync_status")
+            if account.get("last_sync_error"):
+                entry["last_sync_error"] = account["last_sync_error"]
+        if account_id in _pending_syncs:
+            entry["pending"] = True
+        result[account_id] = entry
+    return jsonify(result)
 
 
 def start_sync(account: dict, from_date: str = None, to_date: str = None, days: int = 30,
@@ -732,7 +866,7 @@ def _save_last_sync(account_id: str) -> None:
         cfg = bank_setup.load_config()
         account = next((a for a in cfg["accounts"] if a["id"] == account_id), None)
         if account:
-            account["last_sync_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            account["last_sync_at"] = datetime.now(timezone.utc).strftime(_ISO_DATETIME_FMT)
             account["last_sync_status"] = "ok"
             account.pop("last_sync_error", None)
             bank_setup.save_config(cfg)
@@ -747,7 +881,7 @@ def _save_last_sync_error(account_id: str, status: str, error: str) -> None:
         cfg = bank_setup.load_config()
         account = next((a for a in cfg["accounts"] if a["id"] == account_id), None)
         if account:
-            account["last_sync_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            account["last_sync_at"] = datetime.now(timezone.utc).strftime(_ISO_DATETIME_FMT)
             account["last_sync_status"] = status
             account["last_sync_error"] = error
             bank_setup.save_config(cfg)
@@ -780,4 +914,4 @@ def _forward_to_targets(transactions: list, account: dict) -> dict:
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8090)
+    app.run(host="127.0.0.1", port=8090)

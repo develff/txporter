@@ -3,10 +3,12 @@ txporter - AqBanking CLI wrapper
 Fetches transactions from financial accounts using AqBanking.
 """
 
+import glob as _glob
 import os
 import re
 import select
 import subprocess
+import threading
 import time
 import logging
 from datetime import datetime, timedelta
@@ -15,6 +17,36 @@ from urllib.parse import unquote
 logger = logging.getLogger(__name__)
 
 PINFILE = os.environ.get("TXPORTER_PINFILE", "/home/txporter/config/pinfile")
+_AQBANKING_DIR = os.path.expanduser("~/.aqbanking")
+
+# aqbanking-cli uses a file lock on its config directory, so only one process
+# can run at a time.  We track the running process rather than holding a Lock
+# across two method calls, so a crashed/abandoned process never blocks future
+# syncs — if the process is dead, poll() is not None and we allow a new one.
+_running_proc: "subprocess.Popen | None" = None
+_running_proc_guard = threading.Lock()  # guards _running_proc only
+
+
+def aqbanking_is_busy() -> bool:
+    """Return True if an aqbanking-cli process is currently running."""
+    with _running_proc_guard:
+        return _running_proc is not None and _running_proc.poll() is None
+
+
+def _clear_stale_locks() -> None:
+    """Remove gwenhywfar .lck files left by previously crashed aqbanking-cli processes.
+
+    Only call this when no aqbanking process is running (already guaranteed by
+    the _running_proc check in start_fetch).  In Docker, PIDs are frequently
+    reused, so gwenhywfar can mistake a live unrelated process for the original
+    lock holder and refuse to start for up to ~2 minutes.
+    """
+    for lck in _glob.glob(os.path.join(_AQBANKING_DIR, "**", "*.lck"), recursive=True):
+        try:
+            os.remove(lck)
+            logger.info("Removed stale aqbanking lock file: %s", lck)
+        except OSError as e:
+            logger.warning("Could not remove stale lock file %s: %s", lck, e)
 
 
 def _decode_amount_eur(raw: str) -> tuple[float, str]:
@@ -134,8 +166,9 @@ _PUSH_SIGNALS = (
 )
 
 # How long to wait for aqbanking-cli to connect to the bank and signal
-# whether a TAN is required.  Most banks respond within 5-15 seconds.
-_DRAIN_TIMEOUT = 30
+# whether a TAN is required.  Most banks respond within 5-15 seconds;
+# 90 s gives headroom for slow connections or large date ranges.
+_DRAIN_TIMEOUT = 90
 
 
 class AqBankingClient:
@@ -171,6 +204,7 @@ class AqBankingClient:
         account_id = str(self.account["aqbanking_id"])
 
         cmd = [
+            "stdbuf", "-o0",   # force unbuffered stdout so push prompts are visible immediately
             "aqbanking-cli",
             f"--pinfile={PINFILE}",
             "request",
@@ -181,14 +215,32 @@ class AqBankingClient:
         if to_date:
             cmd.insert(-1, f"--todate={to_date.replace('-', '')}")
 
-        logger.info("Running: %s", " ".join(cmd))
-        self._proc = subprocess.Popen(
-            cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-        )
-        self._stdout_buf = b""
-        self._stderr_buf = b""
+        global _running_proc
+        with _running_proc_guard:
+            if _running_proc is not None and _running_proc.poll() is None:
+                raise RuntimeError(
+                    "Another aqbanking-cli process is already running — please wait and retry"
+                )
+            _clear_stale_locks()
+            logger.info("Running: %s", " ".join(cmd))
+            self._proc = subprocess.Popen(
+                cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            )
+            self._stdout_buf = b""
+            self._stderr_buf = b""
+            _running_proc = self._proc
 
-        return self._drain_until_push_or_exit(_DRAIN_TIMEOUT)
+        try:
+            result = self._drain_until_push_or_exit(_DRAIN_TIMEOUT)
+            if result["status"] == "ok":
+                with _running_proc_guard:
+                    _running_proc = None
+            # "pending": _running_proc stays set until complete_fetch() clears it.
+            return result
+        except Exception:
+            with _running_proc_guard:
+                _running_proc = None
+            raise
 
     def _drain_until_push_or_exit(self, timeout: float) -> dict:
         """Read stdout/stderr until the process exits or a push-TAN prompt appears.
@@ -230,7 +282,17 @@ class AqBankingClient:
                 logger.info("Push-TAN prompt detected — returning pending")
                 return {"status": "pending"}
 
-        logger.warning("aqbanking-cli drain timed out after %.0fs — assuming push was sent", timeout)
+        logger.warning("aqbanking-cli drain timed out after %.0fs — unknown state", timeout)
+        stderr_so_far = self._stderr_buf.decode("utf-8", errors="replace").strip()
+        if stderr_so_far:
+            logger.info("aqbanking stderr at timeout:\n%s", stderr_so_far)
+        else:
+            logger.info("aqbanking stderr at timeout: (empty)")
+        push_seen = any(sig in (self._stdout_buf + self._stderr_buf) for sig in _PUSH_SIGNALS)
+        if push_seen:
+            logger.info("Push signal found in buffered output — treating as pending")
+        else:
+            logger.warning("No push signal in buffered output — TAN state unclear; returning pending anyway")
         return {"status": "pending"}
 
     def _drain_pipes(self):
@@ -251,21 +313,44 @@ class AqBankingClient:
                 else:
                     self._stderr_buf += chunk
 
-    def complete_fetch(self, timeout: int = 60) -> list:
+    def complete_fetch(self, timeout: int = 120) -> list:
         """Confirm push-TAN approval and collect transaction results.
 
-        Sends the approval signal to aqbanking-cli and waits for it to finish.
         Must only be called after start_fetch() returned {"status": "pending"}.
+
+        Only sends the "1\\n" approval signal to aqbanking-cli if a push-TAN
+        prompt was actually detected in the buffered output.  If the drain
+        timed out without seeing any push signal (aqbanking was still
+        connecting or no TAN is needed), we wait for the process to finish
+        naturally without sending any input — sending "1\\n" into a process
+        that isn't waiting for it produces wrong results.
         """
-        remaining_out, remaining_err = self._proc.communicate(input=b"1\n", timeout=timeout)
+        combined = self._stdout_buf + self._stderr_buf
+        push_seen = any(sig in combined for sig in _PUSH_SIGNALS)
+        if push_seen:
+            logger.info("complete_fetch: push signal in buffer — sending approval")
+            stdin_input = b"1\n"
+        else:
+            logger.info("complete_fetch: no push signal in buffer — waiting for process without input")
+            stdin_input = None
+        global _running_proc
+        try:
+            remaining_out, remaining_err = self._proc.communicate(input=stdin_input, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            self._proc.kill()
+            self._proc.communicate()
+            raise RuntimeError(f"aqbanking-cli timed out after {timeout}s waiting for completion")
+        finally:
+            with _running_proc_guard:
+                _running_proc = None
         self._stdout_buf += remaining_out
+        stderr_text = (self._stderr_buf + remaining_err).decode("utf-8", errors="replace").strip()
+        if stderr_text:
+            logger.info("aqbanking stderr:\n%s", stderr_text)
         if self._proc.returncode != 0:
-            raise RuntimeError(
-                f"aqbanking-cli failed: {remaining_err.decode('utf-8', errors='replace')}"
-            )
+            raise RuntimeError(f"aqbanking-cli failed (rc={self._proc.returncode}): {stderr_text}")
         return _parse_ctx(self._stdout_buf.decode("utf-8", errors="replace"))
 
     def _fetch_paypal(self, days: int) -> list:
         """Fetch transactions via AqBanking PayPal backend."""
-        # TODO: implement PayPal fetch
         raise NotImplementedError("PayPal backend not yet implemented")

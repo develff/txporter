@@ -3,7 +3,7 @@
 ## What is this project?
 
 txporter is a Dockerized REST service that fetches transactions from financial
-accounts (banks via FinTS/HBCI, PayPal) and forwards them to configurable targets
+accounts (banks via FinTS/HBCI) and forwards them to configurable targets
 (Firefly III REST API, CSV files).
 
 It uses AqBanking CLI as the underlying library for bank communication.
@@ -13,7 +13,7 @@ It uses AqBanking CLI as the underlying library for bank communication.
 There is no self-hosted, privacy-first, multi-account transaction fetcher that:
 - Runs entirely in Docker (no local dependencies)
 - Exposes a REST API for on-demand sync
-- Supports multiple German banks + PayPal via a single config file
+- Supports multiple German banks via a single config file
 - Writes directly to Firefly III without a CSV detour
 
 ## Architecture
@@ -22,8 +22,8 @@ There is no self-hosted, privacy-first, multi-account transaction fetcher that:
 Financial Account     txporter              Target
 ─────────────────     ────────────────────  ──────────────
 Bank (FinTS)    ────► AqBanking CLI     ──► Firefly III API
-PayPal          ────► │                ──► CSV File
-                      REST API (/sync)
+CSV file        ────► CSV Import Wizard ──► CSV File
+                      REST API + Web UI
 ```
 
 ## Key decisions
@@ -33,36 +33,19 @@ PayPal          ────► │                ──► CSV File
   user triggers manually and confirms in banking app
 - **Python/Flask** for REST API: simple, readable, good subprocess support
 - **AGPL-3.0 + commercial license**: open source but no commercial use without permission
-- **Docker base image**: TBD — prefer rolling release (Arch, openSUSE Tumbleweed)
-  over Debian/Ubuntu LTS for more current AqBanking packages
-
-## Current state
-
-- [x] Project structure created
-- [x] README, LICENSE, docker-compose.yml, Dockerfile (skeleton)
-- [x] src/server.py — Flask REST API skeleton
-- [x] src/aqbanking.py — AqBanking CLI wrapper skeleton
-- [x] src/firefly.py — Firefly III API client skeleton
-- [x] config/banks.example.json — example configuration
-- [x] docs/setup.md, docs/configuration.md
-- [x] Dockerfile: openSUSE Tumbleweed (AqBanking 6.9.1, 148 MB base, rolling, glibc)
-- [x] scripts/setup.sh: interactive AqBanking bank setup script
-- [x] src/aqbanking.py: implement CTX output parsing (all fields, external_id, tests)
-- [x] src/firefly.py: implement proper transaction mapping to Firefly III API (storeTransaction)
-- [x] First working Docker build
-- [x] First real DKB sync test (used to gather sample data for field mapping)
+- **Docker base image**: openSUSE Tumbleweed — rolling release, current AqBanking packages
 
 ## Known FinTS details
 
 | Bank | BLZ | URL | TAN mode |
 |------|-----|-----|----------|
 | DKB | 12030000 | https://fints.dkb.de/fints | 7940 (DKB App) |
-| 1822direkt | 50050222 | https://fints.1822direkt.com/fints/hbci | 6903 (1822TAN+, HKTAN V6/PSD2, read-only since 2025-09-16) |
+| 1822direkt | 50050222 | https://fints.1822direkt.com/fints/hbci | 6903 (1822TAN+, HKTAN V6/PSD2) |
 | Consorsbank | 76030080 | https://brokerage-hbci.consorsbank.de/hbci | pushTAN. Login = Kontonummer + 3-stellige Ber.-Nr., z.B. 900123456001 |
 
 ## AqBanking setup flow (automated via REST API)
 
-Bank registration is now driven by the REST API (`POST /setup`, `POST /setup/{id}/tanmode`,
+Bank registration is driven by the REST API (`POST /setup`, `POST /setup/{id}/tanmode`,
 `POST /setup/{id}/confirm`). See `docs/setup.md` for the full flow.
 
 The underlying `aqhbci-tool4` commands executed per step:
@@ -75,17 +58,6 @@ The underlying `aqhbci-tool4` commands executed per step:
 - txporter writes directly to Firefly III REST API
 - API token stored in config/banks.json (gitignored)
 - Firefly III URL configured in banks.json targets section
-
-## Next steps (priority order)
-
-1. ~~Choose and test Docker base image~~ — done (openSUSE Tumbleweed)
-2. ~~Get Docker build working~~ — Dockerfile in place
-3. ~~Implement scripts/setup.sh for interactive bank registration~~ — done (replaced by REST API, issue #13)
-4. ~~Implement aqbanking.py CTX output parsing~~ — done (issue #5)
-5. ~~Implement firefly.py transaction mapping to Firefly III storeTransaction API~~ — done (issue #7)
-6. ~~End-to-end test: DKB → txporter → Firefly III~~ — done, amounts and deposit/withdrawal mapping correct
-7. ~~Skip zero-amount (pending/reserved) transactions~~ — done (issue #11)
-8. ~~REST API for interactive bank setup (replaces setup.sh)~~ — done (issue #13)
 
 ## Development Guidelines
 
@@ -120,5 +92,5 @@ The underlying `aqhbci-tool4` commands executed per step:
 
 ### Code analysis
 
-- SonarCloud: decision pending (depends on repo visibility)
-- Will be configured when repo goes public
+- SonarCloud integration is configured in `.github/workflows/sonar.yml`
+- Quality Gate must pass before merging to `main`

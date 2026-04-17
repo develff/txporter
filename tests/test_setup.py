@@ -914,3 +914,268 @@ class TestDeleteAccountEndpoint:
     def test_returns_404_for_unknown_string_id(self, client):
         resp = client.delete("/accounts/nonexistent")
         assert resp.status_code == 404
+
+
+# ── _parse_listaccounts: non-Account lines are skipped ────────────────────────
+
+class TestParseListaccountsSkipsNonAccountLines:
+    def test_skips_header_lines(self):
+        output = (
+            "Listing accounts:\n"
+            "Account 0: Bank: 12030000 Account Number: 123 LocalUniqueId: 1\n"
+            "End of list\n"
+        )
+        accounts = _parse_listaccounts(output)
+        assert len(accounts) == 1
+
+
+# ── SetupSession.__init__ exception path ──────────────────────────────────────
+
+class TestSetupSessionInit:
+    def test_pre_existing_ids_empty_on_subprocess_failure(self):
+        with patch("src.setup.subprocess.run", side_effect=Exception("not found")):
+            session = SetupSession("id", "acc", "login", "12030000",
+                                   "https://x", 300, None, "name")
+        assert session._pre_existing_ids == set()
+
+
+# ── SetupSession._extract_tan_challenge fallback ──────────────────────────────
+
+class TestExtractTanChallenge:
+    def test_returns_default_when_no_match(self):
+        session = _make_session()
+        session._acc_output = b"Some output without challenge pattern"
+        assert session._extract_tan_challenge() == "Please enter your TAN."
+
+    def test_returns_challenge_text_when_matched(self):
+        session = _make_session()
+        session._acc_output = (
+            b"The server provided the following challenge: Bitte TAN eingeben. Input:"
+        )
+        result = session._extract_tan_challenge()
+        assert "Bitte TAN eingeben" in result
+
+
+# ── SetupSession._delete_existing_users ───────────────────────────────────────
+
+class TestDeleteExistingUsers:
+    def test_deletes_matching_user(self):
+        session = _make_session()
+        listusers_output = "User 0:\n  User Id: 12345678  Unique Id: 5  BLZ: 12030000\n"
+        run_results = [
+            _ok_run(stdout=listusers_output),  # listusers
+            _ok_run(),                          # deluser
+        ]
+        with patch("src.setup.subprocess.run", side_effect=run_results) as mock_run:
+            session._delete_existing_users()
+        calls = mock_run.call_args_list
+        assert any("deluser" in str(c) for c in calls)
+
+    def test_no_delete_when_no_match(self):
+        session = _make_session()
+        with patch("src.setup.subprocess.run",
+                   return_value=_ok_run(stdout="User 0:\n  User Id: 99999999  Unique Id: 3\n")) as mock_run:
+            session._delete_existing_users()
+        assert mock_run.call_count == 1  # only listusers, no deluser
+
+
+# ── SetupSession._check_duplicate ─────────────────────────────────────────────
+
+class TestCheckDuplicate:
+    def test_returns_existing_id_when_duplicate(self, tmp_path):
+        config = {
+            "accounts": [
+                {"id": "other_dkb", "account_number": "1234567890",
+                 "bank_code_aq": "12030000", "type": "fints"},
+            ],
+            "targets": {},
+        }
+        config_path = str(tmp_path / "banks.json")
+        with open(config_path, "w") as f:
+            json.dump(config, f)
+        session = _make_session()
+        with patch("src.setup.CONFIG_PATH", config_path):
+            result = session._check_duplicate("1234567890", "12030000")
+        assert result == "other_dkb"
+
+    def test_returns_none_when_no_duplicate(self, tmp_path):
+        config = {"accounts": [], "targets": {}}
+        config_path = str(tmp_path / "banks.json")
+        with open(config_path, "w") as f:
+            json.dump(config, f)
+        session = _make_session()
+        with patch("src.setup.CONFIG_PATH", config_path):
+            result = session._check_duplicate("9999999999", "12030000")
+        assert result is None
+
+    def test_returns_none_when_missing_fields(self, tmp_path):
+        config = {"accounts": [], "targets": {}}
+        config_path = str(tmp_path / "banks.json")
+        with open(config_path, "w") as f:
+            json.dump(config, f)
+        session = _make_session()
+        with patch("src.setup.CONFIG_PATH", config_path):
+            assert session._check_duplicate(None, "12030000") is None
+            assert session._check_duplicate("123", None) is None
+
+
+# ── SetupSession._remove_placeholder ──────────────────────────────────────────
+
+class TestRemovePlaceholder:
+    def test_removes_own_account_from_config(self, tmp_path):
+        config = {
+            "accounts": [
+                {"id": "dkb", "name": "dkb"},
+                {"id": "other", "name": "other"},
+            ],
+            "targets": {},
+        }
+        config_path = str(tmp_path / "banks.json")
+        with open(config_path, "w") as f:
+            json.dump(config, f)
+        session = _make_session()
+        with patch("src.setup.CONFIG_PATH", config_path):
+            session._remove_placeholder()
+        saved = json.loads(open(config_path).read())
+        assert not any(a["id"] == "dkb" for a in saved["accounts"])
+        assert any(a["id"] == "other" for a in saved["accounts"])
+
+
+# ── SetupSession._finalize_setup paths ────────────────────────────────────────
+
+class TestFinalizeSetup:
+    def _session_with_user_index(self):
+        session = _make_session()
+        session.user_index = "1"
+        return session
+
+    def test_all_configured_path(self, tmp_path):
+        """When _filter_unconfigured returns empty, all_configured is returned."""
+        config = {"accounts": [{"id": "dkb", "name": "dkb", "type": "fints",
+                                 "blz": "12030000", "url": "u", "login": "l",
+                                 "hbci_version": 300}], "targets": {}}
+        config_path = str(tmp_path / "banks.json")
+        with open(config_path, "w") as f:
+            json.dump(config, f)
+        session = self._session_with_user_index()
+        with patch("src.setup.CONFIG_PATH", config_path), \
+             patch("src.setup.subprocess.run", return_value=_ok_run()), \
+             patch.object(session, "_listaccounts_for_user", return_value=[]), \
+             patch.object(session, "_filter_unconfigured", return_value=[]), \
+             patch.object(session, "_remove_placeholder"):
+            result = session._finalize_setup()
+        assert result["status"] == "all_configured"
+
+    def test_pending_account_select_path(self, tmp_path):
+        """When _find_aqbanking_id returns None, pending_account_select is returned."""
+        config = {"accounts": [{"id": "dkb", "name": "dkb", "type": "fints",
+                                 "blz": "12030000", "url": "u", "login": "l",
+                                 "hbci_version": 300}], "targets": {}}
+        config_path = str(tmp_path / "banks.json")
+        with open(config_path, "w") as f:
+            json.dump(config, f)
+        accounts = [{"aqbanking_id": 1, "bank_code": "99999999",
+                     "account_number": "000", "iban": None}]
+        session = self._session_with_user_index()
+        with patch("src.setup.CONFIG_PATH", config_path), \
+             patch("src.setup.subprocess.run", return_value=_ok_run()), \
+             patch.object(session, "_listaccounts_for_user", return_value=accounts), \
+             patch.object(session, "_filter_unconfigured", return_value=accounts), \
+             patch.object(session, "_find_aqbanking_id", return_value=None):
+            result = session._finalize_setup()
+        assert result["status"] == "pending_account_select"
+        assert result["accounts"] == accounts
+
+
+# ── SetupSession.select_account ───────────────────────────────────────────────
+
+class TestSelectAccount:
+    def test_returns_ok_with_selected_account(self, tmp_path):
+        config = {"accounts": [{"id": "dkb", "name": "dkb", "type": "fints",
+                                 "blz": "12030000", "url": "u", "login": "l",
+                                 "hbci_version": 300}], "targets": {}}
+        config_path = str(tmp_path / "banks.json")
+        with open(config_path, "w") as f:
+            json.dump(config, f)
+        session = _make_session()
+        session.user_index = "1"
+        accounts = [{"aqbanking_id": 5, "bank_code": "12030000",
+                     "account_number": "1234567890", "iban": "DE11",
+                     "account_type_label": "Girokonto"}]
+        session._pending_accounts = accounts
+        with patch("src.setup.CONFIG_PATH", config_path), \
+             patch.object(session, "_write_back"):
+            result = session.select_account(5)
+        assert result["status"] == "ok"
+        assert result["aqbanking_id"] == 5
+        assert result["iban"] == "DE11"
+
+    def test_raises_when_aqbanking_id_not_found(self):
+        session = _make_session()
+        session._pending_accounts = [{"aqbanking_id": 1}]
+        with pytest.raises(ValueError, match="No account with aqbanking_id 99"):
+            session.select_account(99)
+
+
+# ── SetupSession._run_getaccsepa warning path ─────────────────────────────────
+
+class TestRunGetaccsepa:
+    def test_logs_warning_on_failure(self):
+        session = _make_session()
+        session.user_index = "1"
+        with patch("src.setup.subprocess.run",
+                   return_value=_ok_run(returncode=1, stderr="timeout")):
+            session._run_getaccsepa()  # should not raise
+
+
+# ── SetupSession._listaccounts_for_user fallback paths ────────────────────────
+
+class TestListaccountsForUser:
+    def test_blz_fallback_when_snapshot_empty(self):
+        session = _make_session()
+        session.user_index = "1"
+        session._pre_existing_ids = {1}  # account 1 was pre-existing
+        accounts = [{"aqbanking_id": 1, "bank_code": "12030000", "account_number": "123"}]
+        with patch.object(session, "_listaccounts", return_value=accounts):
+            result = session._listaccounts_for_user()
+        assert result == accounts  # BLZ fallback
+
+    def test_user_index_fallback_when_blz_empty(self):
+        session = _make_session()
+        session.user_index = "1"
+        session._pre_existing_ids = {1}
+        all_accounts = [{"aqbanking_id": 1, "bank_code": "99999999", "account_number": "123"}]
+        user_accounts = [{"aqbanking_id": 2, "bank_code": "99999999", "account_number": "456"}]
+        with patch.object(session, "_listaccounts", return_value=all_accounts), \
+             patch("src.setup.subprocess.run",
+                   return_value=_ok_run(stdout="")), \
+             patch("src.setup._parse_listaccounts", return_value=user_accounts):
+            result = session._listaccounts_for_user()
+        assert result == user_accounts
+
+
+# ── SetupSession._write_back edge cases ───────────────────────────────────────
+
+class TestWriteBack:
+    def test_logs_warning_when_aqbanking_id_none(self, tmp_path):
+        config = {"accounts": [{"id": "dkb", "name": "dkb"}], "targets": {}}
+        config_path = str(tmp_path / "banks.json")
+        with open(config_path, "w") as f:
+            json.dump(config, f)
+        session = _make_session()
+        with patch("src.setup.CONFIG_PATH", config_path):
+            session._write_back(None, "DE11", "123", "12030000", "Girokonto")
+        saved = json.loads(open(config_path).read())
+        # aqbanking_id should NOT be written when None
+        assert "aqbanking_id" not in saved["accounts"][0]
+
+    def test_writes_iban_when_provided(self, tmp_path):
+        config = {"accounts": [{"id": "dkb", "name": "dkb"}], "targets": {}}
+        config_path = str(tmp_path / "banks.json")
+        with open(config_path, "w") as f:
+            json.dump(config, f)
+        session = _make_session()
+        with patch("src.setup.CONFIG_PATH", config_path):
+            session._write_back(1, "DE99", "123", "12030000", None)
+        saved = json.loads(open(config_path).read())
+        assert saved["accounts"][0]["iban"] == "DE99"

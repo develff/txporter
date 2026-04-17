@@ -9,6 +9,7 @@ RUN zypper --non-interactive refresh && \
         python313 \
         python313-Flask \
         python313-requests \
+        python313-gunicorn \
         curl \
     && zypper clean --all
 
@@ -17,15 +18,21 @@ RUN zypper --non-interactive refresh && \
 RUN useradd -m -s /bin/bash txporter && \
     mkdir -p /home/txporter/.aqbanking && \
     chown -R txporter:txporter /home/txporter/.aqbanking
-USER txporter
 WORKDIR /home/txporter
 
-# Copy application
-COPY --chown=txporter:txporter src/ ./src/
-COPY --chown=txporter:txporter scripts/ ./scripts/
-COPY --chown=txporter:txporter config/bank_profiles.json ./config/bank_profiles.json
-RUN chmod +x scripts/*.sh
+# Copy application as root, then lock down permissions so the running
+# process cannot modify its own source files.
+COPY src/ ./src/
+COPY scripts/ ./scripts/
+COPY config/bank_profiles.json ./config/bank_profiles.json
+RUN chmod -R 755 src/ scripts/ && \
+    chmod 644 config/bank_profiles.json && \
+    chown -R root:root src/ scripts/ config/
+
+USER txporter
 
 EXPOSE 8090
 
-CMD ["python3", "src/server.py"]
+# workers=1: global state (_pending_syncs, _running_proc) must not be shared across workers.
+# timeout=300: bank syncs can take up to ~210 s (90 s drain + 120 s complete_fetch).
+CMD ["gunicorn", "--chdir", "src", "--bind", "0.0.0.0:8090", "--workers", "1", "--timeout", "300", "server:app"]

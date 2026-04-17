@@ -1,6 +1,7 @@
 # Config with credentials
 config/banks.json
 config/pinfile
+config/_copy.json
 .env
 
 # Output
