@@ -1,8 +1,14 @@
 # txporter
 
+[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=develff_txporter&metric=alert_status&token=82b7230f6f82c0d9a0a96a816fa1df3247080191)](https://sonarcloud.io/summary/new_code?id=develff_txporter)
+
 A Dockerized REST service that fetches transactions from financial accounts and forwards them to Firefly III or CSV files.
 
 > **Security notice:** txporter has no built-in authentication. It is designed exclusively for use on a trusted local network or private Docker network. **Never expose port 8090 to the internet.** Restrict access via firewall, reverse proxy with authentication, or VPN.
+
+## Motivation
+
+txporter was created because existing Firefly III import tools either required a browser redirect (incompatible with pushTAN/app-based TAN) or could not reliably connect to German banks via FinTS/HBCI (at least in my case). The goal was a self-hosted, Docker-based solution that works with the German banking landscape out of the box.
 
 ## Features
 
@@ -20,7 +26,7 @@ A Dockerized REST service that fetches transactions from financial accounts and 
 | Source | Protocol | Status |
 |--------|----------|--------|
 | DKB | FinTS/HBCI | ✅ working |
-| 1822direkt | FinTS/HBCI | ✅ working (read-only since 2025-09-16) |
+| 1822direkt | FinTS/HBCI | ✅ working |
 | Consorsbank | FinTS/HBCI | ✅ working |
 | Other German banks | FinTS/HBCI | should work (untested) |
 | CSV file import | — | ✅ working |
@@ -31,6 +37,11 @@ A Dockerized REST service that fetches transactions from financial accounts and 
 |--------|--------|
 | Firefly III (REST API) | ✅ working |
 | CSV file | ✅ working |
+
+## Known Issues
+
+- **1822direkt — manual date range**: Fetching transactions with a custom date range triggers a different TAN flow at 1822direkt that is not compatible with txporter. Use the default sync window instead.
+- **CSV import — split fields**: If a CSV export spreads a value across multiple columns (e.g. a payment purpose split into `Vwz.0`–`Vwz.17`), txporter can only map one column per field. Manual pre-processing of the CSV is required in that case.
 
 ## Security
 
@@ -102,13 +113,30 @@ Upload any CSV export (e.g. Crypto.com, N26 export) via the Web UI. A 3-step wiz
 
 ## Architecture
 
-```
-Financial Account          txporter                    Target
-─────────────────          ────────────────────        ──────────────
-Bank (FinTS)    ──────────► AqBanking CLI          ──► Firefly III API
-CSV file        ──────────► CSV Import Wizard      ──► CSV File
-                            │
-                            REST API + Web UI
+```mermaid
+flowchart LR
+    subgraph Sources
+        B[Bank\nFinTS/HBCI]
+        C[CSV file]
+    end
+
+    subgraph txporter
+        AQ[AqBanking CLI]
+        WIZ[CSV Import Wizard]
+        API[REST API / Web UI]
+    end
+
+    subgraph Targets
+        FF[Firefly III]
+        CSV2[CSV file]
+    end
+
+    B --> AQ
+    C --> WIZ
+    AQ --> API
+    WIZ --> API
+    API --> FF
+    API --> CSV2
 ```
 
 ## Configuration
