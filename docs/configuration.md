@@ -103,7 +103,7 @@ The PIN file path can be overridden with the `TXPORTER_PINFILE` environment vari
 
 ## CSV Import
 
-CSV import allows importing transactions from any CSV file (e.g. Crypto.com, PayPal export) into Firefly III without a FinTS connection.
+CSV import allows importing transactions from any CSV file (e.g. Crypto.com) into Firefly III without a FinTS connection.
 
 ### Mapping profiles
 

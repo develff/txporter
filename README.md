@@ -7,7 +7,7 @@ A Dockerized REST service that fetches transactions from financial accounts and 
 ## Features
 
 - Fetch transactions from German banks via FinTS/HBCI (using AqBanking)
-- Import transactions from CSV exports (Crypto.com, PayPal export, etc.)
+- Import transactions from CSV exports (e.g. Crypto.com)
 - Forward transactions to Firefly III via REST API
 - Export transactions as CSV
 - On-demand sync via REST API or Web UI
@@ -24,7 +24,6 @@ A Dockerized REST service that fetches transactions from financial accounts and 
 | Consorsbank | FinTS/HBCI | ✅ working |
 | Other German banks | FinTS/HBCI | should work (untested) |
 | CSV file import | — | ✅ working |
-| PayPal | CSV import via PayPal export | ✅ working |
 
 ## Supported Targets
 
