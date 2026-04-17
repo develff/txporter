@@ -116,6 +116,12 @@ CSV file        ──────────► CSV Import Wizard      ──�
 
 See [docs/configuration.md](docs/configuration.md) for details on `banks.json`, environment variables, and the full REST API reference.
 
+## Built with
+
+- [AqBanking](https://www.aquamaniac.de/rdm/projects/aqbanking) — FinTS/HBCI banking library (LGPL-2.1)
+- [Flask](https://flask.palletsprojects.com/) — web framework (BSD)
+- [requests](https://docs.python-requests.org/) — HTTP client (Apache-2.0)
+
 ## License
 
 txporter is available under a dual license:
