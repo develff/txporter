@@ -678,13 +678,14 @@ def csv_fields():
 def csv_preview():
     """Upload a CSV file and return its headers + first 5 data rows.
 
-    Form fields: file (required), delimiter, encoding, skip_rows
+    Form fields: file (required), delimiter, encoding, skip_rows, join_multiline
     """
     file = request.files.get("file")
     if not file:
         return jsonify({"error": "No file uploaded"}), 400
     delimiter = request.form.get("delimiter", ",")
     encoding = request.form.get("encoding", "utf-8")
+    join_multiline = request.form.get("join_multiline", "false").lower() == "true"
     try:
         skip_rows = int(request.form.get("skip_rows", 0))
     except ValueError:
@@ -692,7 +693,7 @@ def csv_preview():
     from csv_import import preview_csv
     try:
         result = preview_csv(file.read(), delimiter=delimiter, encoding=encoding,
-                             skip_rows=skip_rows)
+                             skip_rows=skip_rows, join_multiline=join_multiline)
     except Exception as e:
         return jsonify({"error": str(e)}), 400
     return jsonify(result)
@@ -782,8 +783,19 @@ def get_tags():
 @app.route("/status", methods=["GET"])
 def status():
     """Return last sync status for all accounts."""
-    # TODO: implement persistent status tracking
-    return jsonify({"status": "not implemented yet"})
+    result = {}
+    for account in config["accounts"]:
+        account_id = account["id"]
+        entry = {"id": account_id, "name": account.get("name", account_id)}
+        if account.get("last_sync_at"):
+            entry["last_sync_at"] = account["last_sync_at"]
+            entry["last_sync_status"] = account.get("last_sync_status")
+            if account.get("last_sync_error"):
+                entry["last_sync_error"] = account["last_sync_error"]
+        if account_id in _pending_syncs:
+            entry["pending"] = True
+        result[account_id] = entry
+    return jsonify(result)
 
 
 def start_sync(account: dict, from_date: str = None, to_date: str = None, days: int = 30,

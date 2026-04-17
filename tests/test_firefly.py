@@ -460,7 +460,7 @@ class TestImportTransactions:
     def test_empty_transactions_returns_zeros(self):
         client = self._client()
         result = client.import_transactions([], ACCOUNT)
-        assert result == {"found": 0, "imported": 0, "skipped": 0}
+        assert result == {"found": 0, "imported": 0, "skipped": 0, "errors": 0}
 
     def test_imports_new_transaction(self):
         client = self._client()
@@ -485,7 +485,8 @@ class TestImportTransactions:
         with self._mock_ensure(), self._mock_fetch(), \
              patch("src.firefly.FireflyClient._create_transaction", return_value=False):
             result = client.import_transactions([tx], ACCOUNT)
-        assert result["skipped"] == 1
+        assert result["errors"] == 1
+        assert result["skipped"] == 0
         assert result["imported"] == 0
 
     def test_counts_found_correctly(self):

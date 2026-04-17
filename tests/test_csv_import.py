@@ -186,6 +186,188 @@ class TestPreviewCsv:
         assert result["headers"] == []
         assert result["rows"] == []
 
+    def test_utf8_bom_stripped_from_header(self):
+        data = "\ufeffDate,Amount\n2024-01-01,-1.00\n".encode("utf-8")
+        result = preview_csv(data)
+        assert result["headers"][0] == "Date"
+
+    def test_extra_columns_do_not_raise(self):
+        # Row with more columns than header — must not crash JSON serialisation
+        data = "A,B\n1,2,3,4\n".encode()
+        result = preview_csv(data)
+        assert None not in result["rows"][0]
+        assert result["rows"][0]["A"] == "1"
+
+    def test_multiline_quoted_field(self):
+        data = 'Date;Description\n"2024-01-01";"Line1\nLine2"\n'.encode()
+        result = preview_csv(data, delimiter=";")
+        assert result["rows"][0]["Description"] == "Line1\nLine2"
+
+
+DKB_FIXTURE_PATH = os.path.join(os.path.dirname(__file__), "fixtures", "dkb_sample.csv")
+
+DKB_MAPPING = {
+    "id": "dkb-girokonto",
+    "name": "DKB Girokonto",
+    "delimiter": ";",
+    "encoding": "utf-8",
+    "skip_rows": 4,
+    "account_name": "DKB Girokonto",
+    "fields": {
+        "date":          {"column": "Buchungsdatum", "date_format": "%d.%m.%y"},
+        "amount":        {"column": "Betrag (\u20ac)", "decimal_sep": ","},
+        "currency_code": {"value": "EUR"},
+        "description":   {"column": "Verwendungszweck"},
+        "remote_name":   {"column": "Zahlungsempf\u00e4nger*in"},
+    },
+}
+
+
+class TestDKBFormat:
+    def _fixture_bytes(self):
+        with open(DKB_FIXTURE_PATH, "rb") as f:
+            return f.read()
+
+    def test_preview_strips_bom_and_reads_headers(self):
+        result = preview_csv(self._fixture_bytes(), delimiter=";", encoding="utf-8", skip_rows=4)
+        assert result["headers"][0] == "Buchungsdatum"
+        assert "Betrag (\u20ac)" in result["headers"]
+
+    def test_preview_returns_data_rows(self):
+        result = preview_csv(self._fixture_bytes(), delimiter=";", encoding="utf-8", skip_rows=4)
+        assert len(result["rows"]) == 5
+
+    def test_preview_no_none_keys(self):
+        result = preview_csv(self._fixture_bytes(), delimiter=";", encoding="utf-8", skip_rows=4)
+        for row in result["rows"]:
+            assert None not in row
+
+    def test_parse_and_map_date_two_digit_year(self):
+        txs = parse_and_map(self._fixture_bytes(), DKB_MAPPING)
+        assert txs[0]["date"] == "2026-04-17"
+
+    def test_parse_and_map_amount_comma_decimal(self):
+        txs = parse_and_map(self._fixture_bytes(), DKB_MAPPING)
+        assert txs[0]["amount_eur"] == -41.70
+
+    def test_parse_and_map_positive_amount(self):
+        txs = parse_and_map(self._fixture_bytes(), DKB_MAPPING)
+        incoming = [t for t in txs if t["amount_eur"] > 0]
+        assert len(incoming) == 1
+        assert incoming[0]["amount_eur"] == 600.00
+
+    def test_parse_and_map_all_rows(self):
+        txs = parse_and_map(self._fixture_bytes(), DKB_MAPPING)
+        assert len(txs) == 5
+
+
+# ── 1822direkt multiline format ────────────────────────────────────────────────
+
+DIREKT_FIXTURE_PATH = os.path.join(os.path.dirname(__file__), "fixtures", "1822direkt_sample.csv")
+
+DIREKT_MAPPING = {
+    "id": "1822direkt",
+    "name": "1822direkt",
+    "delimiter": ",",
+    "encoding": "utf-8",
+    "skip_rows": 0,
+    "join_multiline": True,
+    "account_name": "1822direkt",
+    "fields": {
+        "date":          {"column": "date", "date_format": "%Y%m%d"},
+        "amount":        {"column": "amount_eur"},
+        "currency_code": {"column": "currency_code"},
+        "description":   {"column": "purpose"},
+        "remote_name":   {"column": "remote_name"},
+        "external_id":   {"column": "external_id"},
+    },
+}
+
+
+_ML_HDR = "date,amount,currency,name,desc,iban,ext_id"
+
+
+class TestMultilineJoin:
+    def test_two_line_row_joined(self):
+        # Line 1 has 5 fields (< 7), continuation line provides the rest
+        data = (_ML_HDR + "\n2024-01-01,-8,EUR,SHOP,First line\nSecond line,,id1\n").encode()
+        result = preview_csv(data, join_multiline=True)
+        assert len(result["rows"]) == 1
+        assert result["rows"][0]["desc"] == "First line\nSecond line"
+
+    def test_nine_line_row_joined(self):
+        parts = "\n".join([f"Part{i}" for i in range(2, 10)])
+        data = (_ML_HDR + "\n2024-01-01,-8,EUR,SHOP,Part1\n" + parts + ",,id1\n").encode()
+        result = preview_csv(data, join_multiline=True)
+        assert len(result["rows"]) == 1
+        assert result["rows"][0]["desc"].startswith("Part1\nPart2")
+        assert "Part9" in result["rows"][0]["desc"]
+
+    def test_mixed_single_and_multiline(self):
+        data = (
+            _ML_HDR + "\n"
+            "2024-01-01,-8,EUR,SHOP1,Single line,DE01,id1\n"
+            "2024-01-02,-5,EUR,SHOP2,Multi line\npart 2,,id2\n"
+        ).encode()
+        result = preview_csv(data, join_multiline=True)
+        assert len(result["rows"]) == 2
+        assert "\n" not in result["rows"][0]["desc"]
+        assert "\n" in result["rows"][1]["desc"]
+
+    def test_quoted_commas_still_work(self):
+        data = (_ML_HDR + '\n2024-01-01,-8,EUR,SHOP,"field,with,commas",DE01,id1\n').encode()
+        result = preview_csv(data, join_multiline=True)
+        assert result["rows"][0]["desc"] == "field,with,commas"
+
+    def test_join_multiline_false_does_not_merge(self):
+        data = (_ML_HDR + "\n2024-01-01,-8,EUR,SHOP,line1\nline2,,id1\n").encode()
+        result = preview_csv(data, join_multiline=False)
+        assert len(result["rows"]) == 2
+
+
+class Test1822Format:
+    def _fixture_bytes(self):
+        with open(DIREKT_FIXTURE_PATH, "rb") as f:
+            return f.read()
+
+    def test_preview_headers(self):
+        result = preview_csv(self._fixture_bytes(), join_multiline=True)
+        assert result["headers"] == [
+            "date", "amount_eur", "currency_code", "remote_name", "purpose",
+            "remote_iban", "external_id",
+        ]
+
+    def test_preview_yields_5_rows(self):
+        result = preview_csv(self._fixture_bytes(), join_multiline=True)
+        assert len(result["rows"]) == 5
+
+    def test_preview_all_rows_have_7_fields(self):
+        result = preview_csv(self._fixture_bytes(), join_multiline=True)
+        for row in result["rows"]:
+            assert len(row) == 7
+
+    def test_parse_and_map_all_rows(self):
+        txs = parse_and_map(self._fixture_bytes(), DIREKT_MAPPING)
+        assert len(txs) == 10
+
+    def test_parse_and_map_date(self):
+        txs = parse_and_map(self._fixture_bytes(), DIREKT_MAPPING)
+        assert txs[0]["date"] == "2026-02-26"
+
+    def test_parse_and_map_multiline_purpose_preserved(self):
+        txs = parse_and_map(self._fixture_bytes(), DIREKT_MAPPING)
+        payone = next(t for t in txs if "PAYONE" in t["description"])
+        assert "\n" in payone["description"]
+
+    def test_parse_and_map_external_id_from_column(self):
+        txs = parse_and_map(self._fixture_bytes(), DIREKT_MAPPING)
+        assert txs[0]["external_id"].startswith("aqbanking:fints:")
+
+    def test_parse_and_map_salary_positive(self):
+        txs = parse_and_map(self._fixture_bytes(), DIREKT_MAPPING)
+        salary = next(t for t in txs if t["amount_eur"] == 6409.0)
+        assert salary["description"] == "BEZUEGE 03/2026 10000001/001A"
+
 
 # ── parse_and_map ──────────────────────────────────────────────────────────────
 

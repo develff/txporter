@@ -101,15 +101,16 @@ class FireflyClient:
     def import_transactions(self, transactions: list, account: dict) -> dict:
         """Import a list of transactions into Firefly III.
 
-        Returns {"found": N, "imported": Y, "skipped": Z}.
+        Returns {"found": N, "imported": Y, "skipped": Z, "errors": E}.
         Skips transactions whose external_id already exists in Firefly III.
         """
         found = len(transactions)
         imported = 0
         skipped = 0
+        errors = 0
 
         if not transactions:
-            return {"found": 0, "imported": 0, "skipped": 0}
+            return {"found": 0, "imported": 0, "skipped": 0, "errors": 0}
 
         currency = transactions[0].get("currency_code", "EUR")
         account_name = account.get("name", "")
@@ -131,10 +132,13 @@ class FireflyClient:
                 if ext_id:
                     existing_ids.add(ext_id)
             else:
-                skipped += 1
+                errors += 1
 
-        logger.info("Import complete: %d found, %d imported, %d skipped", found, imported, skipped)
-        return {"found": found, "imported": imported, "skipped": skipped}
+        logger.info(
+            "Import complete: %d found, %d imported, %d skipped, %d errors",
+            found, imported, skipped, errors,
+        )
+        return {"found": found, "imported": imported, "skipped": skipped, "errors": errors}
 
     def _ensure_asset_account(self, name: str, currency_code: str, account: dict) -> str | None:
         """Find or create the matching asset account in Firefly III.
@@ -288,7 +292,7 @@ class FireflyClient:
             "date": _iso_date(tx.get("date", "")),
             "amount": amount,
             "currency_code": tx.get("currency_code", ""),
-            "description": tx.get("description") or _build_description(tx),
+            "description": tx.get("description") or _build_description(tx) or "(kein Verwendungszweck)",
             "external_id": tx.get("external_id", ""),
         }
 

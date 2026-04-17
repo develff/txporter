@@ -305,7 +305,7 @@
 
     /* ── Disabled account ── */
     .card.disabled { opacity: .55; }
-    .badge-disabled { background: #f1f5f9; color: #64748b; }
+    .badge-disabled { background: #f1f5f9; color: #475569; }
 
     /* ── Toggle switch ── */
     .toggle { display: inline-flex; align-items: center; cursor: pointer; }
@@ -926,10 +926,12 @@ function syncResultScreen(stats, error) {
   const found    = stats.found    ?? 0;
   const imported = stats.imported ?? found;
   const skipped  = stats.skipped  ?? 0;
+  const errors   = stats.errors   ?? 0;
   const rows = [
     `<tr><td>Found</td><td><strong>${found}</strong></td></tr>`,
     `<tr><td>Imported</td><td><strong>${imported}</strong></td></tr>`,
     skipped > 0 ? `<tr><td>Skipped (already in Firefly)</td><td><strong>${skipped}</strong></td></tr>` : "",
+    errors  > 0 ? `<tr><td>Errors (rejected by Firefly)</td><td><strong style="color:var(--danger)">${errors}</strong></td></tr>` : "",
   ].filter(Boolean).join("");
   return `
   <div class="modal-header">
@@ -1695,9 +1697,12 @@ function wizardStepDuplicate(r) {
 function wizardProgress(step) {
   // steps: 0=credentials, 1=tan mode, 2=confirm, 3=done
   const steps = ["Credentials", "TAN Method", "Confirm", "Done"];
-  return `<div class="wizard-steps">${steps.map((s, i) =>
-    `<div class="wizard-step ${i < step ? "done" : i === Math.floor(step) ? "active" : ""}">${s}</div>`
-  ).join("")}</div>`;
+  return `<div class="wizard-steps">${steps.map((s, i) => {
+    let cls = "";
+    if (i < step) { cls = "done"; }
+    else if (i === Math.floor(step)) { cls = "active"; }
+    return `<div class="wizard-step ${cls}">${s}</div>`;
+  }).join("")}</div>`;
 }
 
 // ── Modal helpers ──────────────────────────────────────────────────────────────
@@ -1861,6 +1866,13 @@ async function runCsvImport(mappingId) {
     if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
     const imported = data.imported ?? data.found ?? 0;
     const skipped  = data.skipped  ?? 0;
+    const errors   = data.errors   ?? 0;
+    const parts = [
+      `${data.found ?? 0} found`,
+      `${imported} imported`,
+      skipped > 0 ? `${skipped} skipped (duplicates)` : "",
+      errors  > 0 ? `${errors} errors` : "",
+    ].filter(Boolean).join(" · ");
     showModal(`
       <div class="modal-header">
         <div><div class="modal-title">Import complete</div></div>
@@ -1868,9 +1880,9 @@ async function runCsvImport(mappingId) {
       </div>
       <div class="modal-body">
         <div class="success-screen">
-          <div class="icon">✅</div>
+          <div class="icon">${errors > 0 ? "⚠️" : "✅"}</div>
           <h3>${imported} transaction${imported === 1 ? "" : "s"} imported</h3>
-          <p>${data.found ?? 0} found · ${imported} imported · ${skipped} skipped (duplicates)</p>
+          <p>${parts}</p>
         </div>
       </div>
       <div class="modal-footer">
@@ -1912,7 +1924,9 @@ function openCsvEditWizard(mappingId) {
 function _csvWizardProgress(step) {
   const steps = ["Configure", "Map Fields", "Save"];
   return `<div class="wizard-steps">${steps.map((s, i) => {
-    const cls = i < step ? "done" : i === step ? "active" : "";
+    let cls = "";
+    if (i < step) { cls = "done"; }
+    else if (i === step) { cls = "active"; }
     return `<div class="wizard-step ${cls}">${s}</div>`;
   }).join("")}</div>`;
 }
@@ -1954,6 +1968,7 @@ function _csvWizardStep1(existing) {
           <label>Encoding</label>
           <select id="csv-wiz-enc">
             <option value="utf-8" ${(d.encoding||"utf-8")==="utf-8"?"selected":""}>UTF-8</option>
+            <option value="utf-8-sig" ${d.encoding==="utf-8-sig"?"selected":""}>UTF-8 with BOM</option>
             <option value="latin-1" ${d.encoding==="latin-1"?"selected":""}>Latin-1</option>
             <option value="cp1252" ${d.encoding==="cp1252"?"selected":""}>Windows-1252</option>
           </select>
@@ -1962,6 +1977,12 @@ function _csvWizardStep1(existing) {
           <label>Skip rows</label>
           <input type="text" id="csv-wiz-skip" value="${d.skip_rows ?? 0}" style="width:100%">
         </div>
+      </div>
+      <div class="form-group">
+        <label style="display:flex;align-items:center;gap:8px;font-size:13px;text-transform:none;letter-spacing:0;font-weight:400">
+          <input type="checkbox" id="csv-wiz-joinml" ${d.join_multiline ? "checked" : ""}>
+          Join continuation rows (for unquoted multi-line fields)
+        </label>
       </div>
       <button class="btn-secondary btn-sm" onclick="csvWizPreview()">Preview →</button>
       <div id="csv-wiz-preview"></div>
@@ -1997,6 +2018,7 @@ async function csvWizPreview() {
   fd.append("delimiter", document.getElementById("csv-wiz-delim").value);
   fd.append("encoding",  document.getElementById("csv-wiz-enc").value);
   fd.append("skip_rows", document.getElementById("csv-wiz-skip").value);
+  fd.append("join_multiline", document.getElementById("csv-wiz-joinml").checked);
   const previewDiv = document.getElementById("csv-wiz-preview");
   previewDiv.innerHTML = `<div style="padding:8px 0"><span class="spinner"></span></div>`;
   try {
@@ -2033,7 +2055,8 @@ async function csvWizToStep2() {
   const skip    = document.getElementById("csv-wiz-skip").value;
 
   // Store format settings on state for step 3
-  csvState._step1 = { delimiter: delim, encoding: enc, skip_rows: Number.parseInt(skip, 10) || 0 };
+  const joinml = (document.getElementById("csv-wiz-joinml") || {}).checked || false;
+  csvState._step1 = { delimiter: delim, encoding: enc, skip_rows: Number.parseInt(skip, 10) || 0, join_multiline: joinml };
 
   _csvWizardStep2(existing);
 }

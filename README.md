@@ -2,6 +2,8 @@
 
 A Dockerized REST service that fetches transactions from financial accounts and forwards them to Firefly III or CSV files.
 
+> **Security notice:** txporter has no built-in authentication. It is designed exclusively for use on a trusted local network or private Docker network. **Never expose port 8090 to the internet.** Restrict access via firewall, reverse proxy with authentication, or VPN.
+
 ## Features
 
 - Fetch transactions from German banks via FinTS/HBCI (using AqBanking)
@@ -33,7 +35,13 @@ A Dockerized REST service that fetches transactions from financial accounts and 
 
 ## Security
 
-txporter is designed for use on a **local network or private Docker network** — it has no built-in authentication. Do not expose port 8090 directly to the internet. Run it behind a firewall or VPN.
+txporter has **no built-in authentication or authorization**. Every request to port 8090 is trusted unconditionally — anyone who can reach it can read your bank account data, trigger syncs, and modify configuration.
+
+**Only run txporter on a trusted local network or private Docker network.** Recommended mitigations:
+
+- Bind the port to `127.0.0.1` only (default) and access via SSH tunnel
+- Place behind a reverse proxy (Nginx, Caddy) with HTTP Basic Auth or SSO
+- Restrict access at the firewall / Docker network level
 
 ## Requirements
 

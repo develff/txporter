@@ -29,5 +29,63 @@
         "value": "CDC-CSV,testimport"
       }
     }
+  },
+  {
+    "id": "dkb",
+    "name": "dkb",
+    "delimiter": ";",
+    "encoding": "utf-8",
+    "skip_rows": 4,
+    "join_multiline": true,
+    "account_name": "DKB",
+    "fields": {
+      "date": {
+        "column": "Buchungsdatum"
+      },
+      "amount": {
+        "column": "Betrag (€)"
+      },
+      "currency_code": {
+        "value": "EUR"
+      },
+      "description": {
+        "column": "Verwendungszweck"
+      },
+      "remote_name": {
+        "column": "Zahlungsempfänger*in"
+      }
+    }
+  },
+  {
+    "id": "1822",
+    "name": "1822",
+    "delimiter": ";",
+    "encoding": "latin-1",
+    "skip_rows": 0,
+    "join_multiline": false,
+    "account_name": "1822direkt Girokonto",
+    "fields": {
+      "date": {
+        "column": "Buchungstag",
+        "date_format": "%d.%m.%Y"
+      },
+      "amount": {
+        "column": "Soll/Haben",
+        "decimal_sep": ",",
+        "thousands_sep": "."
+      },
+      "currency_code": {
+        "value": "EUR"
+      },
+      "description": {
+        "column": "Vwz.0"
+      },
+      "remote_name": {
+        "column": "Empfänger/Auftraggeber Name"
+      },
+      "sepa_ct_id": {
+        "column": "End-to-End-Identifikation"
+      }
+    }
   }
 ]

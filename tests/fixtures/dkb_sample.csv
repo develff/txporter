@@ -1,0 +1,10 @@
+﻿"Girokonto";"DE89370400440532013000"
+
+"Kontostand vom 17.04.2026:";"-136,35 €"
+""
+"Buchungsdatum";"Wertstellung";"Status";"Zahlungspflichtige*r";"Zahlungsempfänger*in";"Verwendungszweck";"Umsatztyp";"IBAN";"Betrag (€)";"Gläubiger-ID";"Mandatsreferenz";"Kundenreferenz"
+"17.04.26";"17.04.26";"Gebucht";"ISSUER";"Rewe Hamburg Mitte - Curve";"VISA Debitkartenumsatz vom 16.04.2026";"Ausgang";"DE75512108001245126199";"-41,70";"";"";"466106571503124"
+"17.04.26";"17.04.26";"Gebucht";"ISSUER";"Amazon";"VISA Debitkartenumsatz vom 16.04.2026";"Ausgang";"DE75512108001245126199";"-10,90";"";"";"386106736521375"
+"14.04.26";"14.04.26";"Gebucht";"ISSUER";"Amazon";"VISA Debitkartenumsatz vom 13.04.2026";"Ausgang";"DE75512108001245126199";"-42,99";"";"";"486103182177830"
+"09.04.26";"09.04.26";"Gebucht";"Max Mustermann";"Erika Musterfrau";"";"Eingang";"DE02100500000054540402";"600,00";"";"";"a2d91af420604afcaeaf38ec1b3ccb5f"
+"09.04.26";"09.04.26";"Gebucht";"Max Mustermann";"DWS Investment GmbH";"T1234561 PER 07.04.26 monatlich";"Ausgang";"DE02234400600266345670";"-111,00";"DE08DEU00000030380";"T165305602";"09-0020285160103799-T1653056"
