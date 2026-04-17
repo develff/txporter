@@ -24,7 +24,7 @@ A Dockerized REST service that fetches transactions from financial accounts and 
 | Consorsbank | FinTS/HBCI | ✅ working |
 | Other German banks | FinTS/HBCI | should work (untested) |
 | CSV file import | — | ✅ working |
-| PayPal | AqBanking PayPal backend | planned |
+| PayPal | CSV import via PayPal export | ✅ working |
 
 ## Supported Targets
 

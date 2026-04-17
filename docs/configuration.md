@@ -31,17 +31,6 @@ Location: `config/banks.json` (gitignored — never commit this file)
 | `login` | Your online banking login |
 | `tan_mode` | TAN method ID (see `aqhbci-tool4 listitanmodes`) |
 
-#### PayPal
-
-```json
-{
-  "id": "paypal",
-  "name": "PayPal",
-  "type": "paypal",
-  "login": "your@email.com"
-}
-```
-
 ### Known FinTS URLs
 
 | Bank | BLZ | URL | TAN mode |
