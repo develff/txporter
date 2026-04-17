@@ -574,6 +574,55 @@ class TestStatusEndpoint:
         assert "consorsbank" in data
         assert data["consorsbank"]["id"] == "consorsbank"
 
+    def test_status_includes_last_sync_fields(self, sync_client):
+        import src.server as server_mod
+        for acc in server_mod.config["accounts"]:
+            if acc["id"] == "consorsbank":
+                acc["last_sync_at"] = "2026-01-01T00:00:00"
+                acc["last_sync_status"] = "ok"
+                acc.pop("last_sync_error", None)
+                break
+        try:
+            resp = sync_client.get("/status")
+            data = resp.get_json()
+            assert data["consorsbank"]["last_sync_at"] == "2026-01-01T00:00:00"
+            assert data["consorsbank"]["last_sync_status"] == "ok"
+            assert "last_sync_error" not in data["consorsbank"]
+        finally:
+            for acc in server_mod.config["accounts"]:
+                if acc["id"] == "consorsbank":
+                    acc.pop("last_sync_at", None)
+                    acc.pop("last_sync_status", None)
+
+    def test_status_includes_last_sync_error(self, sync_client):
+        import src.server as server_mod
+        for acc in server_mod.config["accounts"]:
+            if acc["id"] == "consorsbank":
+                acc["last_sync_at"] = "2026-01-01T00:00:00"
+                acc["last_sync_status"] = "error"
+                acc["last_sync_error"] = "timeout"
+                break
+        try:
+            resp = sync_client.get("/status")
+            data = resp.get_json()
+            assert data["consorsbank"]["last_sync_error"] == "timeout"
+        finally:
+            for acc in server_mod.config["accounts"]:
+                if acc["id"] == "consorsbank":
+                    acc.pop("last_sync_at", None)
+                    acc.pop("last_sync_status", None)
+                    acc.pop("last_sync_error", None)
+
+    def test_status_shows_pending(self, sync_client):
+        import src.server as server_mod
+        server_mod._pending_syncs["consorsbank"] = object()
+        try:
+            resp = sync_client.get("/status")
+            data = resp.get_json()
+            assert data["consorsbank"].get("pending") is True
+        finally:
+            server_mod._pending_syncs.pop("consorsbank", None)
+
 
 class TestSyncAllCallsStartSync:
     def test_sync_all_calls_start_sync_for_enabled_account(self, sync_client):
