@@ -8,7 +8,7 @@ A Dockerized REST service that fetches transactions from financial accounts and 
 
 ## Motivation
 
-txporter was created because existing Firefly III import tools either required a browser redirect (incompatible with pushTAN/app-based TAN) or could not reliably connect to German banks via FinTS/HBCI (at least in my case). The goal was a self-hosted, Docker-based solution that works with the German banking landscape out of the box.
+txporter was created because I wanted a single tool to sync all my financial accounts to Firefly III — German banks via FinTS/HBCI and CSV-based sources (e.g. Crypto.com) alike. Existing tools either didn't support FinTS/HBCI reliably (at least in my case), or covered only one source type and required juggling multiple importers. The goal was one self-hosted, Docker-based solution that handles everything.
 
 ## Features
 
@@ -37,6 +37,31 @@ txporter was created because existing Firefly III import tools either required a
 |--------|--------|
 | Firefly III (REST API) | ✅ working |
 | CSV file | ✅ working |
+
+## Screenshots
+
+<table>
+  <tr>
+    <td align="center" valign="top" width="50%">
+      <strong>Account overview</strong><br><br>
+      <img src="docs/txporter_overview.png" alt="Account overview" width="100%">
+    </td>
+    <td align="center" valign="top" width="50%">
+      <strong>Add account wizard</strong><br><br>
+      <img src="docs/txporter_add_account.png" alt="Add account wizard" width="100%">
+    </td>
+  </tr>
+  <tr>
+    <td align="center" valign="top" width="50%">
+      <strong>CSV import — mapping profiles</strong><br><br>
+      <img src="docs/txporter_csv_overview.png" alt="CSV import overview" width="100%">
+    </td>
+    <td align="center" valign="top" width="50%">
+      <strong>CSV import — field mapping wizard</strong><br><br>
+      <img src="docs/txporter_csv_mapping.png" alt="CSV field mapping" width="100%">
+    </td>
+  </tr>
+</table>
 
 ## Known Issues
 
