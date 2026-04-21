@@ -103,6 +103,35 @@ open http://localhost:8090
 
 The Web UI guides you through bank account setup and lets you trigger syncs manually.
 
+### Quick Start with Firefly III (all-in-one)
+
+If you don't have Firefly III running yet, use the combined stack:
+
+```bash
+git clone https://github.com/develff/txporter.git
+cd txporter
+
+# Prepare config
+cp .env.firefly.example .env.firefly
+# Edit .env.firefly: set APP_KEY (openssl rand -base64 24) and POSTGRES_PASSWORD
+
+cp config/banks.example.json config/banks.json
+
+# Create the AqBanking volume
+docker volume create txporter_aqbanking
+
+# Start all services
+docker compose --env-file .env.firefly -f docker-compose.firefly.yml up -d
+```
+
+Then:
+
+1. Open **http://localhost:8080** → create your Firefly III admin account
+2. Go to **Profile → OAuth → Personal Access Tokens** → create a token
+3. Set `FIREFLY_TOKEN=<your-token>` in `.env.firefly` and the same token in `config/banks.json` → `targets.firefly.token`
+4. `docker compose -f docker-compose.firefly.yml restart txporter`
+5. Open **http://localhost:8090** → add bank accounts
+
 ### Bank account setup (REST API)
 
 Bank registration is done via the REST API — no shell access or manual file editing required.

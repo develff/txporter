@@ -4,6 +4,7 @@ config/banks.demo.json
 config/pinfile
 config/_copy.json
 .env
+.env.firefly
 
 # Output
 output/
