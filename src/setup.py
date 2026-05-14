@@ -47,7 +47,7 @@ def _write_pin(pinfile: str, blz: str, login: str, pin: str):
     except FileNotFoundError:
         pass
     for i, line in enumerate(lines):
-        if line.startswith(f"{key} ") or line.startswith(f"{key}="):
+        if line.startswith((f"{key} ", f"{key}=")):
             lines[i] = entry
             break
     else:

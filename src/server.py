@@ -85,7 +85,7 @@ def _fire_webhook(webhook_url: str, account_id: str, error: str) -> None:
         }, timeout=10)
         logger.info(f"Webhook fired for {account_id}: {error}")
     except Exception as e:
-        logger.error(f"Webhook POST failed for {account_id}: {e}")
+        logger.exception(f"Webhook POST failed for {account_id}")
 
 
 def _start_pending_timeout(account_id: str, webhook_url: str) -> None:
@@ -149,7 +149,7 @@ def _scheduler_loop() -> None:
                     logger.info(f"Scheduler triggering sync at {now.strftime('%H:%M:%S')}")
                     threading.Thread(target=_run_scheduled_sync, daemon=True).start()
         except Exception as e:
-            logger.error(f"Scheduler check error: {e}")
+            logger.exception("Scheduler check error")
         _time.sleep(30)
 
 
@@ -544,7 +544,7 @@ def setup_start():
         cfg["accounts"] = [a for a in cfg["accounts"] if a["id"] != account_id]
         bank_setup.save_config(cfg)
         config["accounts"] = cfg["accounts"]
-        logger.error("Setup step 1 failed for %s: %s", account_id, e)
+        logger.exception("Setup step 1 failed for %s", account_id)
         return jsonify({"error": str(e)}), 500
 
     _pending_setups[setup_id] = session
@@ -569,7 +569,7 @@ def setup_acceptcert(setup_id):
     try:
         result = session.step1b_accept_cert(bool(accept))
     except Exception as e:
-        logger.error("Certificate acceptance failed for %s: %s", setup_id, e)
+        logger.exception("Certificate acceptance failed for %s", setup_id)
         if not accept:
             _pending_setups.pop(setup_id, None)
         return jsonify({"error": str(e)}), 500
@@ -595,7 +595,7 @@ def setup_tanmode(setup_id):
     try:
         result = session.step2_set_tanmode(int(tan_mode))
     except Exception as e:
-        logger.error("Setup step 2 failed for %s: %s", setup_id, e)
+        logger.exception("Setup step 2 failed for %s", setup_id)
         return jsonify({"error": str(e)}), 500
 
     return jsonify(result), 202
@@ -621,7 +621,7 @@ def setup_submit_tan(setup_id):
         result = session.step3b_submit_tan(str(tan))
     except Exception as e:
         _pending_setups[setup_id] = session  # put back so caller can retry
-        logger.error("TAN submission failed for %s: %s", setup_id, e)
+        logger.exception("TAN submission failed for %s", setup_id)
         return jsonify({"error": str(e)}), 500
 
     config["accounts"] = bank_setup.load_config()["accounts"]
@@ -639,7 +639,7 @@ def setup_confirm(setup_id):
         result = session.step3_confirm()
     except Exception as e:
         _pending_setups[setup_id] = session  # put back so caller can retry
-        logger.error("Setup step 3 failed for %s: %s", setup_id, e)
+        logger.exception("Setup step 3 failed for %s", setup_id)
         return jsonify({"error": str(e)}), 500
 
     if result.get("status") in ("pending_tan", "pending_account_select"):
@@ -669,7 +669,7 @@ def setup_select_account(setup_id):
         result = session.select_account(int(aqbanking_id))
     except Exception as e:
         _pending_setups[setup_id] = session
-        logger.error("Account selection failed for %s: %s", setup_id, e)
+        logger.exception("Account selection failed for %s", setup_id)
         return jsonify({"error": str(e)}), 500
 
     config["accounts"] = bank_setup.load_config()["accounts"]
@@ -730,7 +730,7 @@ def csv_import_route():
     try:
         transactions = parse_and_map(file.read(), mapping)
     except Exception as e:
-        logger.error("CSV parse error: %s", e)
+        logger.exception("CSV parse error")
         return jsonify({"error": str(e)}), 400
 
     account = {"name": mapping.get("account_name", "")}
@@ -844,7 +844,7 @@ def start_sync(account: dict, from_date: str = None, to_date: str = None, days: 
             _save_last_sync(account_id)
             return {"status": "ok", **stats}
     except Exception as e:
-        logger.error(f"Error starting sync for {account_id}: {e}")
+        logger.exception(f"Error starting sync for {account_id}")
         return {"status": "error", "message": str(e)}
 
 
@@ -865,7 +865,7 @@ def complete_sync(account_id: str, dry_run: bool = False, export_format: str = N
         _save_last_sync(account_id)
         return {"status": "ok", **stats}
     except Exception as e:
-        logger.error(f"Error completing sync for {account_id}: {e}")
+        logger.exception(f"Error completing sync for {account_id}")
         return {"status": "error", "message": str(e)}
 
 
