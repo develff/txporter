@@ -972,3 +972,110 @@ class TestAqBankingAccountsEndpoints:
         assert account["tan_mode"] == 7940
         assert account["iban"] == "DE12345678901234567890"
         assert account["account_type_label"] == "Depot"
+
+
+# ── Config endpoints ───────────────────────────────────────────────────────────
+
+@pytest.fixture()
+def config_client(tmp_path):
+    """Flask test client with a writable config path for config endpoint tests."""
+    initial = {
+        "accounts": [],
+        "targets": {
+            "firefly": {"enabled": False, "url": "", "token": ""},
+            "csv": {"enabled": False, "path": "/home/txporter/output"},
+        },
+    }
+    config_path = str(tmp_path / "config.json")
+    with open(config_path, "w") as f:
+        json.dump(initial, f)
+
+    import src.server as server_mod
+    import src.setup as setup_mod
+
+    orig = setup_mod.CONFIG_PATH
+    setup_mod.CONFIG_PATH = config_path
+
+    yield server_mod.app.test_client()
+
+    setup_mod.CONFIG_PATH = orig
+
+
+class TestConfigGet:
+    def test_returns_firefly_and_csv(self, config_client):
+        resp = config_client.get("/config")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert "firefly" in data
+        assert "csv" in data
+
+    def test_firefly_fields_present(self, config_client):
+        resp = config_client.get("/config")
+        ff = resp.get_json()["firefly"]
+        assert "enabled" in ff
+        assert "url" in ff
+        assert "token" in ff
+
+    def test_csv_fields_present(self, config_client):
+        resp = config_client.get("/config")
+        csv = resp.get_json()["csv"]
+        assert "enabled" in csv
+        assert "path" in csv
+
+
+class TestConfigFireflyPost:
+    def test_save_url_and_token(self, config_client):
+        resp = config_client.post(
+            "/config/firefly",
+            data=json.dumps({"url": "https://ff.example.com", "token": "tok123", "enabled": True}),
+            content_type="application/json",
+        )
+        assert resp.status_code == 200
+        assert resp.get_json()["ok"] is True
+
+    def test_values_persisted(self, config_client):
+        config_client.post(
+            "/config/firefly",
+            data=json.dumps({"url": "https://ff.example.com", "token": "tok123", "enabled": True}),
+            content_type="application/json",
+        )
+        data = config_client.get("/config").get_json()
+        assert data["firefly"]["url"] == "https://ff.example.com"
+        assert data["firefly"]["token"] == "tok123"
+        assert data["firefly"]["enabled"] is True
+
+    def test_partial_update(self, config_client):
+        config_client.post(
+            "/config/firefly",
+            data=json.dumps({"url": "https://ff.example.com", "token": "tok"}),
+            content_type="application/json",
+        )
+        config_client.post(
+            "/config/firefly",
+            data=json.dumps({"enabled": True}),
+            content_type="application/json",
+        )
+        data = config_client.get("/config").get_json()
+        assert data["firefly"]["url"] == "https://ff.example.com"
+        assert data["firefly"]["enabled"] is True
+
+
+class TestConfigCsvPost:
+    def test_save_csv_settings(self, config_client):
+        resp = config_client.post(
+            "/config/csv",
+            data=json.dumps({"enabled": True, "path": "/data/out"}),
+            content_type="application/json",
+        )
+        assert resp.status_code == 200
+        assert resp.get_json()["ok"] is True
+
+    def test_values_persisted(self, config_client):
+        config_client.post(
+            "/config/csv",
+            data=json.dumps({"enabled": True, "path": "/data/out"}),
+            content_type="application/json",
+        )
+        data = config_client.get("/config").get_json()
+        assert data["csv"]["enabled"] is True
+        assert data["csv"]["path"] == "/data/out"

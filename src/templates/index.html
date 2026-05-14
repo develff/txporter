@@ -439,6 +439,39 @@
     .drop-zone:hover, .drop-zone.drag-over { border-color: var(--primary); background: #eff6ff; color: var(--primary); }
     .drop-zone input[type=file] { display: none; }
     .drop-zone-filename { font-weight: 600; color: var(--text); margin-top: 4px; }
+
+    /* ── Warning banner ── */
+    .banner-warn {
+      background: #fffbeb;
+      border: 1px solid #fcd34d;
+      border-radius: var(--radius);
+      padding: 10px 16px;
+      color: #92400e;
+      font-size: 13px;
+      margin-bottom: 16px;
+    }
+    .banner-warn a { color: #92400e; font-weight: 600; }
+
+    /* ── Settings tab ── */
+    .settings-section { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 20px; margin-bottom: 16px; }
+    .settings-section h2 { font-size: 15px; font-weight: 700; margin-bottom: 16px; }
+    .settings-row { display: flex; flex-direction: column; gap: 4px; margin-bottom: 14px; }
+    .settings-row:last-child { margin-bottom: 0; }
+    .settings-row label { font-size: 13px; font-weight: 500; color: var(--text); }
+    .settings-row input[type=text], .settings-row input[type=password], .settings-row input[type=url] {
+      width: 100%; padding: 7px 10px; border: 1px solid var(--border); border-radius: var(--radius);
+      font-size: 13px; background: var(--bg); color: var(--text);
+    }
+    .settings-row input:focus { outline: none; border-color: var(--primary); background: #fff; }
+    .settings-hint { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+    .toggle-row { display: flex; align-items: center; justify-content: space-between; }
+    .toggle { position: relative; display: inline-block; width: 40px; height: 22px; }
+    .toggle input { opacity: 0; width: 0; height: 0; }
+    .toggle-slider { position: absolute; cursor: pointer; inset: 0; background: #cbd5e1; border-radius: 22px; transition: .2s; }
+    .toggle-slider:before { content: ""; position: absolute; width: 16px; height: 16px; left: 3px; bottom: 3px; background: #fff; border-radius: 50%; transition: .2s; }
+    .toggle input:checked + .toggle-slider { background: var(--primary); }
+    .toggle input:checked + .toggle-slider:before { transform: translateX(18px); }
+    .settings-actions { display: flex; justify-content: flex-end; margin-top: 16px; }
   </style>
 </head>
 <body>
@@ -462,7 +495,11 @@
   <nav class="tab-nav">
     <button class="tab-btn active" id="tab-btn-accounts" onclick="showTab('accounts')">Accounts</button>
     <button class="tab-btn" id="tab-btn-csv" onclick="showTab('csv')">CSV Import</button>
+    <button class="tab-btn" id="tab-btn-settings" onclick="showTab('settings')">Settings</button>
   </nav>
+  <div id="firefly-warning" style="display:none" class="banner-warn">
+    Firefly III is enabled but no API token is set. <a href="#" onclick="showTab('settings');return false;">Configure in Settings</a>
+  </div>
   <div id="tab-accounts">
     <div id="accounts-container">
       <div class="empty"><div class="spinner"></div></div>
@@ -472,6 +509,9 @@
     <div id="csv-container">
       <div class="empty"><div class="spinner"></div></div>
     </div>
+  </div>
+  <div id="tab-settings" style="display:none">
+    <div id="settings-container"></div>
   </div>
 </main>
 
@@ -1751,11 +1791,12 @@ function formatDate(iso) {
 
 // ── Tab navigation ─────────────────────────────────────────────────────────────
 function showTab(name) {
-  ["accounts", "csv"].forEach(t => {
+  ["accounts", "csv", "settings"].forEach(t => {
     document.getElementById(`tab-${t}`).style.display = t === name ? "" : "none";
     document.getElementById(`tab-btn-${t}`).classList.toggle("active", t === name);
   });
   if (name === "csv") loadCsvMappings();
+  if (name === "settings") loadSettings();
 }
 
 // ── CSV state ──────────────────────────────────────────────────────────────────
@@ -2366,6 +2407,110 @@ document.getElementById("btn-add").addEventListener("click", openSetupWizard);
 document.getElementById("btn-sync-all").addEventListener("click", openSyncAllModal);
 document.getElementById("btn-scheduler").addEventListener("click", openSchedulerModal);
 
+// ── Settings ───────────────────────────────────────────────────────────────────
+const settingsState = { cfg: null };
+
+async function loadSettings() {
+  try {
+    settingsState.cfg = await api("GET", "/config");
+  } catch {
+    settingsState.cfg = null;
+  }
+  renderSettings();
+}
+
+function renderSettings() {
+  const el = document.getElementById("settings-container");
+  const cfg = settingsState.cfg || { firefly: {}, csv: {} };
+  const ff = cfg.firefly || {};
+  const csv = cfg.csv || {};
+  const fireflyUrl = ff.url || "";
+  const token = ff.token || "";
+  const tokenPlaceholder = token ? "••••••••••••••••" : "Paste token here";
+  el.innerHTML = `
+    <div class="settings-section">
+      <h2>Firefly III</h2>
+      <div class="settings-row">
+        <div class="toggle-row">
+          <label for="ff-enabled">Enabled</label>
+          <label class="toggle">
+            <input type="checkbox" id="ff-enabled" ${ff.enabled ? "checked" : ""}>
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+      <div class="settings-row">
+        <label for="ff-url">URL</label>
+        <input type="url" id="ff-url" value="${escHtml(fireflyUrl)}" placeholder="https://firefly.example.com">
+      </div>
+      <div class="settings-row">
+        <label for="ff-token">Personal Access Token</label>
+        <input type="password" id="ff-token" value="${escHtml(token)}" placeholder="${tokenPlaceholder}" autocomplete="off">
+        <span class="settings-hint">Generate at <em>your-firefly-url</em>/profile#oauth → Personal Access Tokens</span>
+      </div>
+      <div class="settings-actions">
+        <button class="btn-primary btn-sm" onclick="saveFirefly()">Save</button>
+      </div>
+    </div>
+    <div class="settings-section">
+      <h2>CSV Export</h2>
+      <div class="settings-row">
+        <div class="toggle-row">
+          <label for="csv-enabled">Enabled</label>
+          <label class="toggle">
+            <input type="checkbox" id="csv-enabled" ${csv.enabled ? "checked" : ""}>
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+      <div class="settings-row">
+        <label for="csv-path">Output path</label>
+        <input type="text" id="csv-path" value="${escHtml(csv.path || "/home/txporter/output")}" placeholder="/home/txporter/output">
+      </div>
+      <div class="settings-actions">
+        <button class="btn-primary btn-sm" onclick="saveCsv()">Save</button>
+      </div>
+    </div>`;
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+}
+
+async function saveFirefly() {
+  const enabled = document.getElementById("ff-enabled").checked;
+  const url = document.getElementById("ff-url").value.trim();
+  const tokenEl = document.getElementById("ff-token");
+  const token = tokenEl.value;
+  try {
+    await api("POST", "/config/firefly", { enabled, url, token });
+    settingsState.cfg = await api("GET", "/config");
+    renderSettings();
+    updateFireflyWarning(settingsState.cfg);
+  } catch(e) {
+    alert("Failed to save: " + e.message);
+  }
+}
+
+async function saveCsv() {
+  const enabled = document.getElementById("csv-enabled").checked;
+  const path = document.getElementById("csv-path").value.trim();
+  try {
+    await api("POST", "/config/csv", { enabled, path });
+    settingsState.cfg = await api("GET", "/config");
+    renderSettings();
+  } catch(e) {
+    alert("Failed to save: " + e.message);
+  }
+}
+
+function updateFireflyWarning(cfg) {
+  const el = document.getElementById("firefly-warning");
+  if (!el) return;
+  const ff = (cfg || {}).firefly || {};
+  el.style.display = (ff.enabled && !ff.token) ? "" : "none";
+}
+
 // ── Init ───────────────────────────────────────────────────────────────────────
 async function init() {
   await loadAccounts();
@@ -2373,6 +2518,11 @@ async function init() {
     const sched = await api("GET", "/scheduler");
     state.schedulerEnabled = sched.enabled;
     updateSchedulerIndicator(sched.enabled, sched.time);
+  } catch {}
+  try {
+    const cfg = await api("GET", "/config");
+    settingsState.cfg = cfg;
+    updateFireflyWarning(cfg);
   } catch {}
   // Pre-load fields list in background so CSV tab is instant
   loadCsvFields().catch(() => {});

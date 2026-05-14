@@ -167,6 +167,58 @@ def health():
     return jsonify({"status": "ok"})
 
 
+@app.route("/config", methods=["GET"])
+def config_get():
+    """Return current target configuration (Firefly + CSV)."""
+    cfg = bank_setup.load_config()
+    targets = cfg.get("targets", {})
+    firefly = targets.get("firefly", {})
+    csv_target = targets.get("csv", {})
+    return jsonify({
+        "firefly": {
+            "enabled": firefly.get("enabled", False),
+            "url": firefly.get("url", ""),
+            "token": firefly.get("token", ""),
+        },
+        "csv": {
+            "enabled": csv_target.get("enabled", False),
+            "path": csv_target.get("path", "/home/txporter/output"),
+        },
+    })
+
+
+@app.route("/config/firefly", methods=["POST"])
+def config_firefly_post():
+    """Save Firefly URL and token."""
+    body = request.get_json(force=True, silent=True) or {}
+    cfg = bank_setup.load_config()
+    targets = cfg.setdefault("targets", {})
+    firefly = targets.setdefault("firefly", {})
+    if "enabled" in body:
+        firefly["enabled"] = bool(body["enabled"])
+    if "url" in body:
+        firefly["url"] = str(body["url"]).strip()
+    if "token" in body:
+        firefly["token"] = str(body["token"]).strip()
+    bank_setup.save_config(cfg)
+    return jsonify({"ok": True})
+
+
+@app.route("/config/csv", methods=["POST"])
+def config_csv_post():
+    """Save CSV target settings."""
+    body = request.get_json(force=True, silent=True) or {}
+    cfg = bank_setup.load_config()
+    targets = cfg.setdefault("targets", {})
+    csv_target = targets.setdefault("csv", {})
+    if "enabled" in body:
+        csv_target["enabled"] = bool(body["enabled"])
+    if "path" in body:
+        csv_target["path"] = str(body["path"]).strip()
+    bank_setup.save_config(cfg)
+    return jsonify({"ok": True})
+
+
 @app.route("/scheduler", methods=["GET"])
 def scheduler_get():
     """Return current scheduler config and next scheduled run time."""
