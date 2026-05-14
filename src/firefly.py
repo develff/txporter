@@ -285,55 +285,36 @@ class FireflyClient:
             page += 1
         return external_ids
 
-    def _create_transaction(self, tx: dict, account: dict, firefly_account_id: str | None = None) -> bool | None:
-        """Create a single transaction in Firefly III.
+    @staticmethod
+    def _build_account_routing(is_withdrawal: bool, account_name: str,
+                                firefly_account_id: str | None, remote_name: str | None) -> dict:
+        """Return source/destination fields for a transaction split.
 
-        Returns True on success, None if skipped (zero amount), False on API error.
+        Withdrawals: asset account is source, remote party is destination.
+        Deposits: remote party is source, asset account is destination.
+        Uses firefly_account_id (stable internal ID) when available, falls back to name.
         """
-        amount_eur = tx.get("amount_eur", 0.0)
-        if not amount_eur:
-            logger.debug("Skipping zero-amount transaction external_id=%s", tx.get("external_id"))
-            return None
-        is_withdrawal = amount_eur < 0
-        tx_type = "withdrawal" if is_withdrawal else "deposit"
-        amount = f"{abs(amount_eur):.2f}"
-        account_name = account.get("name", "")
-        remote_name = tx.get("remote_name") or None
-
-        split = {
-            "type": tx_type,
-            "date": _iso_date(tx.get("date", "")),
-            "amount": amount,
-            "currency_code": tx.get("currency_code", ""),
-            "description": tx.get("description") or _build_description(tx) or "(kein Verwendungszweck)",
-            "external_id": tx.get("external_id", ""),
-        }
-
-        # For withdrawals: source = asset account, destination = expense account (auto-created by name)
-        # For deposits: source = revenue account (auto-created by name), destination = asset account
-        # Use firefly_account_id (stable) when available; fall back to name for new accounts.
-        if is_withdrawal:
-            if firefly_account_id:
-                split["source_id"] = firefly_account_id
-            else:
-                split["source_name"] = account_name
-            if remote_name:
-                split["destination_name"] = remote_name
+        own_id_key = "source_id" if is_withdrawal else "destination_id"
+        own_name_key = "source_name" if is_withdrawal else "destination_name"
+        remote_key = "destination_name" if is_withdrawal else "source_name"
+        routing = {}
+        if firefly_account_id:
+            routing[own_id_key] = firefly_account_id
         else:
-            if firefly_account_id:
-                split["destination_id"] = firefly_account_id
-            else:
-                split["destination_name"] = account_name
-            if remote_name:
-                split["source_name"] = remote_name
+            routing[own_name_key] = account_name
+        if remote_name:
+            routing[remote_key] = remote_name
+        return routing
 
+    @staticmethod
+    def _apply_optional_fields(split: dict, tx: dict) -> None:
+        """Add optional fields to split in-place."""
         if tx.get("valuta_date"):
             split["book_date"] = _iso_date(tx["valuta_date"])
         if tx.get("end_to_end_reference"):
             split["sepa_ct_id"] = tx["end_to_end_reference"]
         if tx.get("primanota") and tx.get("primanota") != "0":
             split["internal_reference"] = tx["primanota"]
-
         if tx.get("category_name"):
             split["category_name"] = tx["category_name"]
         if tx.get("budget_name"):
@@ -348,18 +329,38 @@ class FireflyClient:
             split["foreign_amount"] = f"{abs(float(tx['foreign_amount'])):.8f}".rstrip("0").rstrip(".")
             if tx.get("foreign_currency_code"):
                 split["foreign_currency_code"] = tx["foreign_currency_code"]
-
         notes = _build_notes(tx)
         if notes:
             split["notes"] = notes
 
-        payload = {"transactions": [split]}
+    def _create_transaction(self, tx: dict, account: dict, firefly_account_id: str | None = None) -> bool | None:
+        """Create a single transaction in Firefly III.
+
+        Returns True on success, None if skipped (zero amount), False on API error.
+        """
+        amount_eur = tx.get("amount_eur", 0.0)
+        if not amount_eur:
+            logger.debug("Skipping zero-amount transaction external_id=%s", tx.get("external_id"))
+            return None
+        is_withdrawal = amount_eur < 0
+        split = {
+            "type": "withdrawal" if is_withdrawal else "deposit",
+            "date": _iso_date(tx.get("date", "")),
+            "amount": f"{abs(amount_eur):.2f}",
+            "currency_code": tx.get("currency_code", ""),
+            "description": tx.get("description") or _build_description(tx) or "(kein Verwendungszweck)",
+            "external_id": tx.get("external_id", ""),
+        }
+        split.update(self._build_account_routing(
+            is_withdrawal, account.get("name", ""), firefly_account_id, tx.get("remote_name") or None,
+        ))
+        self._apply_optional_fields(split, tx)
+
         response = requests.post(
             f"{self.base_url}/api/v1/transactions",
             headers=self.headers,
-            json=payload,
+            json={"transactions": [split]},
         )
-
         if not response.ok:
             data = response.json() if response.content else {}
             message = data.get("message", response.text)
@@ -368,6 +369,5 @@ class FireflyClient:
                 tx.get("external_id"), response.status_code, message,
             )
             return False
-        else:
-            logger.debug("Created transaction external_id=%s", tx.get("external_id"))
-            return True
+        logger.debug("Created transaction external_id=%s", tx.get("external_id"))
+        return True
