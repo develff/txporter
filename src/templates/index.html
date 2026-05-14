@@ -2429,8 +2429,9 @@ function renderSettings() {
   const fireflyUrl = ff.url || "";
   const token = ff.token || "";
   const tokenPlaceholder = token ? "••••••••••••••••" : "Paste token here";
+  const browserUrl = fireflyUrl.replace("host.docker.internal", "localhost");
   const oauthLink = fireflyUrl
-    ? `<a href="${escHtml(fireflyUrl.replace(/\/$/, ""))}/profile#oauth" target="_blank" rel="noopener" class="settings-hint-link">Open Firefly → Profile → Personal Access Tokens</a>`
+    ? `<a href="${escHtml(browserUrl.replace(/\/$/, ""))}/profile#oauth" target="_blank" rel="noopener" class="settings-hint-link">Open Firefly → Profile → Personal Access Tokens</a>`
     : `<span class="settings-hint">Enter URL above to get a link to Firefly token page</span>`;
   el.innerHTML = `
     <div class="settings-section">
@@ -2447,6 +2448,7 @@ function renderSettings() {
       <div class="settings-row">
         <label for="ff-url">URL</label>
         <input type="url" id="ff-url" value="${escHtml(fireflyUrl)}" placeholder="https://firefly.example.com">
+        <span class="settings-hint">If Firefly runs on the same machine as txporter, use <code>host.docker.internal</code> instead of <code>localhost</code>.</span>
       </div>
       <div class="settings-row">
         <label for="ff-token">Personal Access Token</label>
@@ -2455,8 +2457,8 @@ function renderSettings() {
       </div>
       <div class="settings-actions">
         <span id="ff-test-result"></span>
-        <button class="btn-secondary btn-sm" onclick="testFirefly()" ${token ? "" : "disabled"}>Test connection</button>
-        <button class="btn-primary btn-sm" onclick="saveFirefly()">Save</button>
+        <button class="btn-secondary btn-sm" id="btn-ff-test" onclick="testFirefly()" ${token ? "" : "disabled"}>Test connection</button>
+        <button class="btn-primary btn-sm" id="btn-ff-save" onclick="saveFirefly()" disabled>Save</button>
       </div>
     </div>
     <div class="settings-section">
@@ -2478,6 +2480,15 @@ function renderSettings() {
         <button class="btn-primary btn-sm" onclick="saveCsv()">Save</button>
       </div>
     </div>`;
+
+  ["ff-url", "ff-token"].forEach(id => {
+    document.getElementById(id).addEventListener("input", () => {
+      document.getElementById("btn-ff-save").disabled = true;
+      document.getElementById("btn-ff-test").disabled = !document.getElementById("ff-token").value.trim();
+      const r = document.getElementById("ff-test-result");
+      r.textContent = ""; r.style.color = "";
+    });
+  });
 }
 
 function escHtml(s) {
@@ -2486,12 +2497,15 @@ function escHtml(s) {
 
 async function testFirefly() {
   const resultEl = document.getElementById("ff-test-result");
+  const saveBtn = document.getElementById("btn-ff-save");
   resultEl.textContent = "Testing…";
   resultEl.style.color = "var(--text-muted)";
+  saveBtn.disabled = true;
   try {
     await api("POST", "/config/firefly/test");
     resultEl.textContent = "✓ Connected";
     resultEl.style.color = "var(--success)";
+    saveBtn.disabled = false;
   } catch(e) {
     resultEl.textContent = "✗ " + e.message;
     resultEl.style.color = "var(--danger)";
