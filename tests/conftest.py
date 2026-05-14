@@ -7,17 +7,17 @@ import json
 # module import time as module-level constants. ────────────────────────────────
 
 _FIXTURE_DIR = os.path.join(os.path.dirname(__file__), "fixtures")
-_FIXTURE_CONFIG = os.path.join(_FIXTURE_DIR, "banks.test.json")
+_FIXTURE_CONFIG = os.path.join(_FIXTURE_DIR, "config.test.json")
 
 os.makedirs(_FIXTURE_DIR, exist_ok=True)
 if not os.path.exists(_FIXTURE_CONFIG):
     with open(_FIXTURE_CONFIG, "w") as _f:
         json.dump({"accounts": [], "targets": {}}, _f)
 
+_CONFIG_DIR = os.path.join(os.path.dirname(__file__), "..", "config")
 os.environ.setdefault("TXPORTER_CONFIG", _FIXTURE_CONFIG)
-os.environ.setdefault("TXPORTER_PROFILES", os.path.join(
-    os.path.dirname(__file__), "..", "config", "bank_profiles.json"
-))
+os.environ.setdefault("TXPORTER_CATALOG", os.path.join(_CONFIG_DIR, "bank_profiles.json"))
+os.environ.setdefault("TXPORTER_PROFILES", os.path.join(_CONFIG_DIR, "bank_profiles.json"))
 os.environ.setdefault("TXPORTER_CSV_MAPPINGS", os.path.join(_FIXTURE_DIR, "csv_mappings.test.json"))
 
 # ── Add src/ to path so server.py's bare imports (aqbanking, config, setup) work.

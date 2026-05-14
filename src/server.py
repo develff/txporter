@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 import requests as _requests
 from flask import Flask, jsonify, render_template, request
 from aqbanking import AqBankingClient, aqbanking_is_busy
-from config import load_config
+from config import load_config, ensure_config_exists
 import setup as bank_setup
 import logging
 
@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024  # 16 MB cap for CSV uploads
+ensure_config_exists()
 config = load_config()
 
 _ISO_DATETIME_FMT = "%Y-%m-%dT%H:%M:%SZ"
@@ -500,18 +501,26 @@ def setup_start():
     # Write PIN to pinfile
     bank_setup._write_pin(bank_setup.PINFILE, blz, login, pin)
 
-    # Pre-create account entry in banks.json (without aqbanking_id)
-    new_account = {
-        "id": account_id,
-        "name": name,
-        "type": "fints",
-        "blz": blz,
-        "url": url,
-        "login": login,
-        "hbci_version": hbci_version,
-    }
-    if tan_mode is not None:
-        new_account["tan_mode"] = tan_mode
+    # Pre-create account entry in config.json (without aqbanking_id)
+    if profile_key:
+        new_account = {
+            "id": account_id,
+            "name": name,
+            "catalog_ref": profile_key,
+            "login": login,
+        }
+    else:
+        new_account = {
+            "id": account_id,
+            "name": name,
+            "type": "fints",
+            "blz": blz,
+            "url": url,
+            "login": login,
+            "hbci_version": hbci_version,
+        }
+        if tan_mode is not None:
+            new_account["tan_mode"] = tan_mode
     cfg["accounts"].append(new_account)
     bank_setup.save_config(cfg)
     config["accounts"] = cfg["accounts"]
