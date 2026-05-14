@@ -1059,6 +1059,16 @@ class TestConfigFireflyPost:
         assert data["firefly"]["url"] == "https://ff.example.com"
         assert data["firefly"]["enabled"] is True
 
+    def test_updates_in_memory_config(self, config_client):
+        import src.server as server_mod
+        config_client.post(
+            "/config/firefly",
+            data=json.dumps({"url": "https://ff.example.com", "token": "tok", "enabled": True}),
+            content_type="application/json",
+        )
+        assert server_mod.config["targets"]["firefly"]["url"] == "https://ff.example.com"
+        assert server_mod.config["targets"]["firefly"]["enabled"] is True
+
 
 class TestConfigCsvPost:
     def test_save_csv_settings(self, config_client):
@@ -1079,6 +1089,16 @@ class TestConfigCsvPost:
         data = config_client.get("/config").get_json()
         assert data["csv"]["enabled"] is True
         assert data["csv"]["path"] == "/data/out"
+
+    def test_updates_in_memory_config(self, config_client):
+        import src.server as server_mod
+        config_client.post(
+            "/config/csv",
+            data=json.dumps({"enabled": True, "path": "/data/out"}),
+            content_type="application/json",
+        )
+        assert server_mod.config["targets"]["csv"]["enabled"] is True
+        assert server_mod.config["targets"]["csv"]["path"] == "/data/out"
 
 
 class TestConfigFireflyTest:

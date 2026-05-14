@@ -201,6 +201,7 @@ def config_firefly_post():
     if "token" in body:
         firefly["token"] = str(body["token"]).strip()
     bank_setup.save_config(cfg)
+    config["targets"] = cfg["targets"]
     return jsonify({"ok": True})
 
 
@@ -216,6 +217,7 @@ def config_csv_post():
     if "path" in body:
         csv_target["path"] = str(body["path"]).strip()
     bank_setup.save_config(cfg)
+    config["targets"] = cfg["targets"]
     return jsonify({"ok": True})
 
 
