@@ -165,12 +165,36 @@ class TestFireflyClientCreateTransaction:
         payload = mock_post.call_args.kwargs["json"]
         assert payload["transactions"][0]["description"] == "DAUERAUFTRAG – Miete April"
 
-    def test_source_name_from_account(self):
+    def test_source_name_from_account_when_no_id(self):
         client = self._make_client()
         tx = make_tx()
         mock_post = self._post(client, tx)
         payload = mock_post.call_args.kwargs["json"]
         assert payload["transactions"][0]["source_name"] == "DKB Girokonto"
+
+    def test_source_id_used_when_firefly_account_id_given(self):
+        client = self._make_client()
+        tx = make_tx(amount_eur=-20.0)
+        mock_resp = MagicMock()
+        mock_resp.ok = True
+        mock_resp.status_code = 200
+        with patch("src.firefly.requests.post", return_value=mock_resp) as mock_post:
+            client._create_transaction(tx, ACCOUNT, firefly_account_id="42")
+        split = mock_post.call_args.kwargs["json"]["transactions"][0]
+        assert split["source_id"] == "42"
+        assert "source_name" not in split
+
+    def test_destination_id_used_when_firefly_account_id_given(self):
+        client = self._make_client()
+        tx = make_tx(amount_eur=50.0)
+        mock_resp = MagicMock()
+        mock_resp.ok = True
+        mock_resp.status_code = 200
+        with patch("src.firefly.requests.post", return_value=mock_resp) as mock_post:
+            client._create_transaction(tx, ACCOUNT, firefly_account_id="42")
+        split = mock_post.call_args.kwargs["json"]["transactions"][0]
+        assert split["destination_id"] == "42"
+        assert "destination_name" not in split
 
     def test_destination_name_from_remote_name(self):
         client = self._make_client()

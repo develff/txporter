@@ -127,7 +127,7 @@ class FireflyClient:
                 logger.debug("Skipping duplicate external_id=%s", ext_id)
                 skipped += 1
                 continue
-            if self._create_transaction(tx, account):
+            if self._create_transaction(tx, account, firefly_account_id):
                 imported += 1
                 if ext_id:
                     existing_ids.add(ext_id)
@@ -275,7 +275,7 @@ class FireflyClient:
             page += 1
         return external_ids
 
-    def _create_transaction(self, tx: dict, account: dict) -> bool:
+    def _create_transaction(self, tx: dict, account: dict, firefly_account_id: str | None = None) -> bool:
         """Create a single transaction in Firefly III. Returns True on success, False on skip/error."""
         amount_eur = tx.get("amount_eur", 0.0)
         if not amount_eur:
@@ -296,14 +296,21 @@ class FireflyClient:
             "external_id": tx.get("external_id", ""),
         }
 
-        # For withdrawals: source = asset account, destination = expense account (auto-created)
-        # For deposits: source = revenue account (auto-created), destination = asset account
+        # For withdrawals: source = asset account, destination = expense account (auto-created by name)
+        # For deposits: source = revenue account (auto-created by name), destination = asset account
+        # Use firefly_account_id (stable) when available; fall back to name for new accounts.
         if is_withdrawal:
-            split["source_name"] = account_name
+            if firefly_account_id:
+                split["source_id"] = firefly_account_id
+            else:
+                split["source_name"] = account_name
             if remote_name:
                 split["destination_name"] = remote_name
         else:
-            split["destination_name"] = account_name
+            if firefly_account_id:
+                split["destination_id"] = firefly_account_id
+            else:
+                split["destination_name"] = account_name
             if remote_name:
                 split["source_name"] = remote_name
 
