@@ -219,6 +219,25 @@ def config_csv_post():
     return jsonify({"ok": True})
 
 
+@app.route("/config/firefly/test", methods=["POST"])
+def config_firefly_test():
+    """Test Firefly connectivity using current config."""
+    cfg = bank_setup.load_config()
+    firefly_cfg = cfg.get("targets", {}).get("firefly", {})
+    url = firefly_cfg.get("url", "").rstrip("/")
+    token = firefly_cfg.get("token", "")
+    if not url:
+        return jsonify({"ok": False, "error": "No URL configured"}), 400
+    if not token:
+        return jsonify({"ok": False, "error": "No token configured"}), 400
+    try:
+        from firefly import FireflyClient
+        FireflyClient(firefly_cfg).get_tags()
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 502
+
+
 @app.route("/scheduler", methods=["GET"])
 def scheduler_get():
     """Return current scheduler config and next scheduled run time."""

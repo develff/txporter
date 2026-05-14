@@ -471,7 +471,9 @@
     .toggle-slider:before { content: ""; position: absolute; width: 16px; height: 16px; left: 3px; bottom: 3px; background: #fff; border-radius: 50%; transition: .2s; }
     .toggle input:checked + .toggle-slider { background: var(--primary); }
     .toggle input:checked + .toggle-slider:before { transform: translateX(18px); }
-    .settings-actions { display: flex; justify-content: flex-end; margin-top: 16px; }
+    .settings-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+    #ff-test-result { font-size: 12px; margin-right: auto; }
+    .settings-hint-link { font-size: 12px; color: var(--primary); }
   </style>
 </head>
 <body>
@@ -2427,6 +2429,9 @@ function renderSettings() {
   const fireflyUrl = ff.url || "";
   const token = ff.token || "";
   const tokenPlaceholder = token ? "••••••••••••••••" : "Paste token here";
+  const oauthLink = fireflyUrl
+    ? `<a href="${escHtml(fireflyUrl.replace(/\/$/, ""))}/profile#oauth" target="_blank" rel="noopener" class="settings-hint-link">Open Firefly → Profile → Personal Access Tokens</a>`
+    : `<span class="settings-hint">Enter URL above to get a link to Firefly token page</span>`;
   el.innerHTML = `
     <div class="settings-section">
       <h2>Firefly III</h2>
@@ -2446,9 +2451,11 @@ function renderSettings() {
       <div class="settings-row">
         <label for="ff-token">Personal Access Token</label>
         <input type="password" id="ff-token" value="${escHtml(token)}" placeholder="${tokenPlaceholder}" autocomplete="off">
-        <span class="settings-hint">Generate at <em>your-firefly-url</em>/profile#oauth → Personal Access Tokens</span>
+        <span class="settings-hint">${oauthLink}</span>
       </div>
       <div class="settings-actions">
+        <span id="ff-test-result"></span>
+        <button class="btn-secondary btn-sm" onclick="testFirefly()" ${token ? "" : "disabled"}>Test connection</button>
         <button class="btn-primary btn-sm" onclick="saveFirefly()">Save</button>
       </div>
     </div>
@@ -2475,6 +2482,20 @@ function renderSettings() {
 
 function escHtml(s) {
   return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+}
+
+async function testFirefly() {
+  const resultEl = document.getElementById("ff-test-result");
+  resultEl.textContent = "Testing…";
+  resultEl.style.color = "var(--text-muted)";
+  try {
+    await api("POST", "/config/firefly/test");
+    resultEl.textContent = "✓ Connected";
+    resultEl.style.color = "var(--success)";
+  } catch(e) {
+    resultEl.textContent = "✗ " + e.message;
+    resultEl.style.color = "var(--danger)";
+  }
 }
 
 async function saveFirefly() {

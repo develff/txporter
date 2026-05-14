@@ -1079,3 +1079,45 @@ class TestConfigCsvPost:
         data = config_client.get("/config").get_json()
         assert data["csv"]["enabled"] is True
         assert data["csv"]["path"] == "/data/out"
+
+
+class TestConfigFireflyTest:
+    def test_returns_400_when_url_missing(self, config_client):
+        resp = config_client.post("/config/firefly/test")
+        assert resp.status_code == 400
+        assert resp.get_json()["ok"] is False
+
+    def test_returns_400_when_token_missing(self, config_client):
+        config_client.post(
+            "/config/firefly",
+            data=json.dumps({"url": "https://ff.example.com"}),
+            content_type="application/json",
+        )
+        resp = config_client.post("/config/firefly/test")
+        assert resp.status_code == 400
+        assert resp.get_json()["ok"] is False
+
+    def test_returns_ok_when_firefly_reachable(self, config_client):
+        config_client.post(
+            "/config/firefly",
+            data=json.dumps({"url": "https://ff.example.com", "token": "tok"}),
+            content_type="application/json",
+        )
+        with patch("firefly.FireflyClient") as MockClient:
+            MockClient.return_value.get_tags.return_value = []
+            resp = config_client.post("/config/firefly/test")
+        assert resp.status_code == 200
+        assert resp.get_json()["ok"] is True
+
+    def test_returns_502_when_firefly_unreachable(self, config_client):
+        config_client.post(
+            "/config/firefly",
+            data=json.dumps({"url": "https://ff.example.com", "token": "tok"}),
+            content_type="application/json",
+        )
+        with patch("firefly.FireflyClient") as MockClient:
+            MockClient.return_value.get_tags.side_effect = Exception("Connection refused")
+            resp = config_client.post("/config/firefly/test")
+        assert resp.status_code == 502
+        assert resp.get_json()["ok"] is False
+        assert "Connection refused" in resp.get_json()["error"]
