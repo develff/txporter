@@ -2499,6 +2499,9 @@ function renderSettings() {
     const r = document.getElementById("ff-test-result");
     r.textContent = ""; r.style.color = "";
   });
+  document.getElementById("ff-enabled").addEventListener("change", () => {
+    document.getElementById("btn-ff-save").disabled = false;
+  });
 }
 
 function escHtml(s) {
