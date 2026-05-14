@@ -221,18 +221,23 @@ def config_csv_post():
 
 @app.route("/config/firefly/test", methods=["POST"])
 def config_firefly_test():
-    """Test Firefly connectivity using current config."""
-    cfg = bank_setup.load_config()
-    firefly_cfg = cfg.get("targets", {}).get("firefly", {})
-    url = firefly_cfg.get("url", "").rstrip("/")
-    token = firefly_cfg.get("token", "")
+    """Test Firefly connectivity. Uses URL+token from request body, falls back to saved config."""
+    body = request.get_json(force=True, silent=True) or {}
+    if "url" in body or "token" in body:
+        url = str(body.get("url", "")).strip().rstrip("/")
+        token = str(body.get("token", "")).strip()
+    else:
+        cfg = bank_setup.load_config()
+        firefly_cfg = cfg.get("targets", {}).get("firefly", {})
+        url = firefly_cfg.get("url", "").rstrip("/")
+        token = firefly_cfg.get("token", "")
     if not url:
         return jsonify({"ok": False, "error": "No URL configured"}), 400
     if not token:
         return jsonify({"ok": False, "error": "No token configured"}), 400
     try:
         from firefly import FireflyClient
-        FireflyClient(firefly_cfg).get_tags()
+        FireflyClient({"url": url, "token": token}).get_tags()
         return jsonify({"ok": True})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 502

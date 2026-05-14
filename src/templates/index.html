@@ -2430,9 +2430,6 @@ function renderSettings() {
   const token = ff.token || "";
   const tokenPlaceholder = token ? "••••••••••••••••" : "Paste token here";
   const browserUrl = fireflyUrl.replace("host.docker.internal", "localhost");
-  const oauthLink = fireflyUrl
-    ? `<a href="${escHtml(browserUrl.replace(/\/$/, ""))}/profile#oauth" target="_blank" rel="noopener" class="settings-hint-link">Open Firefly → Profile → Personal Access Tokens</a>`
-    : `<span class="settings-hint">Enter URL above to get a link to Firefly token page</span>`;
   el.innerHTML = `
     <div class="settings-section">
       <h2>Firefly III</h2>
@@ -2452,8 +2449,12 @@ function renderSettings() {
       </div>
       <div class="settings-row">
         <label for="ff-token">Personal Access Token</label>
-        <input type="password" id="ff-token" value="${escHtml(token)}" placeholder="${tokenPlaceholder}" autocomplete="off">
-        <span class="settings-hint">${oauthLink}</span>
+        <div style="display:flex;gap:8px;align-items:center">
+          <input type="password" id="ff-token" value="${escHtml(token)}" placeholder="${tokenPlaceholder}" autocomplete="off" style="flex:1">
+          <a id="ff-oauth-link" href="${escHtml(browserUrl.replace(/\/$/, ""))}/profile#oauth" target="_blank" rel="noopener">
+            <button type="button" class="btn-secondary btn-sm" id="btn-ff-get-token" ${fireflyUrl ? "" : "disabled"}>Get Token</button>
+          </a>
+        </div>
       </div>
       <div class="settings-actions">
         <span id="ff-test-result"></span>
@@ -2481,13 +2482,22 @@ function renderSettings() {
       </div>
     </div>`;
 
-  ["ff-url", "ff-token"].forEach(id => {
-    document.getElementById(id).addEventListener("input", () => {
-      document.getElementById("btn-ff-save").disabled = true;
-      document.getElementById("btn-ff-test").disabled = !document.getElementById("ff-token").value.trim();
-      const r = document.getElementById("ff-test-result");
-      r.textContent = ""; r.style.color = "";
-    });
+  document.getElementById("ff-url").addEventListener("input", function() {
+    document.getElementById("btn-ff-save").disabled = true;
+    document.getElementById("btn-ff-test").disabled = !document.getElementById("ff-token").value.trim();
+    const r = document.getElementById("ff-test-result");
+    r.textContent = ""; r.style.color = "";
+    const url = this.value.trim().replace("host.docker.internal", "localhost").replace(/\/$/, "");
+    const linkEl = document.getElementById("ff-oauth-link");
+    if (linkEl) linkEl.href = url ? `${url}/profile#oauth` : "#";
+    const getTokenBtn = document.getElementById("btn-ff-get-token");
+    if (getTokenBtn) getTokenBtn.disabled = !url;
+  });
+  document.getElementById("ff-token").addEventListener("input", () => {
+    document.getElementById("btn-ff-save").disabled = true;
+    document.getElementById("btn-ff-test").disabled = !document.getElementById("ff-token").value.trim();
+    const r = document.getElementById("ff-test-result");
+    r.textContent = ""; r.style.color = "";
   });
 }
 
@@ -2498,11 +2508,13 @@ function escHtml(s) {
 async function testFirefly() {
   const resultEl = document.getElementById("ff-test-result");
   const saveBtn = document.getElementById("btn-ff-save");
+  const url = document.getElementById("ff-url").value.trim();
+  const token = document.getElementById("ff-token").value.trim();
   resultEl.textContent = "Testing…";
   resultEl.style.color = "var(--text-muted)";
   saveBtn.disabled = true;
   try {
-    await api("POST", "/config/firefly/test");
+    await api("POST", "/config/firefly/test", { url, token });
     resultEl.textContent = "✓ Connected";
     resultEl.style.color = "var(--success)";
     saveBtn.disabled = false;
