@@ -28,6 +28,7 @@ services:
       DB_PORT: 5432
       DB_DATABASE: firefly
       DB_USERNAME: firefly
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
       TRUSTED_PROXIES: "**"
       DEFAULT_LANGUAGE: de_DE
       DEFAULT_LOCALE: de_DE
@@ -48,7 +49,8 @@ services:
       - firefly_db_data:/var/lib/postgresql/data
 
   txporter:
-    build: .
+    image: ghcr.io/develff/txporter:latest
+    # For local development, replace the line above with: build: .
     container_name: txporter
     restart: unless-stopped
     ports:
