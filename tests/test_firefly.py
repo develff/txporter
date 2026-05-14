@@ -165,12 +165,36 @@ class TestFireflyClientCreateTransaction:
         payload = mock_post.call_args.kwargs["json"]
         assert payload["transactions"][0]["description"] == "DAUERAUFTRAG – Miete April"
 
-    def test_source_name_from_account(self):
+    def test_source_name_from_account_when_no_id(self):
         client = self._make_client()
         tx = make_tx()
         mock_post = self._post(client, tx)
         payload = mock_post.call_args.kwargs["json"]
         assert payload["transactions"][0]["source_name"] == "DKB Girokonto"
+
+    def test_source_id_used_when_firefly_account_id_given(self):
+        client = self._make_client()
+        tx = make_tx(amount_eur=-20.0)
+        mock_resp = MagicMock()
+        mock_resp.ok = True
+        mock_resp.status_code = 200
+        with patch("src.firefly.requests.post", return_value=mock_resp) as mock_post:
+            client._create_transaction(tx, ACCOUNT, firefly_account_id="42")
+        split = mock_post.call_args.kwargs["json"]["transactions"][0]
+        assert split["source_id"] == "42"
+        assert "source_name" not in split
+
+    def test_destination_id_used_when_firefly_account_id_given(self):
+        client = self._make_client()
+        tx = make_tx(amount_eur=50.0)
+        mock_resp = MagicMock()
+        mock_resp.ok = True
+        mock_resp.status_code = 200
+        with patch("src.firefly.requests.post", return_value=mock_resp) as mock_post:
+            client._create_transaction(tx, ACCOUNT, firefly_account_id="42")
+        split = mock_post.call_args.kwargs["json"]["transactions"][0]
+        assert split["destination_id"] == "42"
+        assert "destination_name" not in split
 
     def test_destination_name_from_remote_name(self):
         client = self._make_client()
@@ -272,6 +296,19 @@ class TestDedupStartDate:
             client._fetch_existing_external_ids("42")
         call_params = mock_get.call_args.kwargs["params"]
         assert "start" not in call_params
+
+    def test_fetch_uses_global_transactions_endpoint(self):
+        """Global /api/v1/transactions endpoint is used so transactions reclassified
+        to a different account (e.g. PayPal-Transit) are still found."""
+        client = FireflyClient(CONFIG)
+        mock_resp = MagicMock()
+        mock_resp.ok = True
+        mock_resp.json.return_value = {"data": [], "meta": {"pagination": {"total_pages": 1}}}
+        with patch("src.firefly.requests.get", return_value=mock_resp) as mock_get:
+            client._fetch_existing_external_ids("42", start_date="2026-04-13")
+        url = mock_get.call_args.args[0]
+        assert url.endswith("/api/v1/transactions")
+        assert "/accounts/" not in url
 
 
 class TestGetTags:
@@ -479,14 +516,24 @@ class TestImportTransactions:
         assert result["skipped"] == 1
         assert result["imported"] == 0
 
-    def test_skips_when_create_returns_false(self):
+    def test_counts_error_when_create_returns_false(self):
         client = self._client()
-        tx = make_tx(amount_eur=0.0)
+        tx = make_tx()
         with self._mock_ensure(), self._mock_fetch(), \
              patch("src.firefly.FireflyClient._create_transaction", return_value=False):
             result = client.import_transactions([tx], ACCOUNT)
         assert result["errors"] == 1
         assert result["skipped"] == 0
+        assert result["imported"] == 0
+
+    def test_counts_skipped_when_create_returns_none(self):
+        client = self._client()
+        tx = make_tx(amount_eur=0.0)
+        with self._mock_ensure(), self._mock_fetch(), \
+             patch("src.firefly.FireflyClient._create_transaction", return_value=None):
+            result = client.import_transactions([tx], ACCOUNT)
+        assert result["skipped"] == 1
+        assert result["errors"] == 0
         assert result["imported"] == 0
 
     def test_counts_found_correctly(self):
@@ -497,6 +544,18 @@ class TestImportTransactions:
             result = client.import_transactions(txs, ACCOUNT)
         assert result["found"] == 3
         assert result["imported"] == 3
+
+    def test_passes_start_date_to_fetch(self):
+        """import_transactions computes start_date from batch and passes it to dedup query."""
+        client = self._client()
+        tx = make_tx(date="20260420")
+        with self._mock_ensure(), \
+             patch("src.firefly.FireflyClient._fetch_existing_external_ids", return_value=set()) as mock_fetch, \
+             patch("src.firefly.FireflyClient._create_transaction", return_value=True):
+            client.import_transactions([tx], ACCOUNT)
+        _, kwargs = mock_fetch.call_args
+        # start_date should be 20260420 minus 7 buffer days = 2026-04-13
+        assert mock_fetch.call_args[0][1] == "2026-04-13"
 
 
 class TestEnsureAssetAccount:

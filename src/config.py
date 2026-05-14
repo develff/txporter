@@ -65,14 +65,21 @@ def save_config(cfg: dict, path: str = None) -> None:
 
 
 def ensure_config_exists(path: str = None) -> None:
-    """Create a minimal config.json if none exists yet."""
+    """Create a minimal config.json if none exists yet, migrating banks.json if present."""
+    import logging
     path = path or CONFIG_PATH
-    if not os.path.exists(path):
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        save_config({
-            "accounts": [],
-            "targets": {
-                "firefly": {"enabled": False, "url": "", "token": ""},
-                "csv": {"enabled": False, "path": "/home/txporter/output"},
-            },
-        }, path)
+    if os.path.exists(path):
+        return
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    legacy = os.path.join(os.path.dirname(path), "banks.json")
+    if os.path.exists(legacy):
+        os.rename(legacy, path)
+        logging.getLogger(__name__).info("Migrated banks.json → config.json")
+        return
+    save_config({
+        "accounts": [],
+        "targets": {
+            "firefly": {"enabled": False, "url": "", "token": ""},
+            "csv": {"enabled": False, "path": "/home/txporter/output"},
+        },
+    }, path)

@@ -1059,6 +1059,16 @@ class TestConfigFireflyPost:
         assert data["firefly"]["url"] == "https://ff.example.com"
         assert data["firefly"]["enabled"] is True
 
+    def test_updates_in_memory_config(self, config_client):
+        import src.server as server_mod
+        config_client.post(
+            "/config/firefly",
+            data=json.dumps({"url": "https://ff.example.com", "token": "tok", "enabled": True}),
+            content_type="application/json",
+        )
+        assert server_mod.config["targets"]["firefly"]["url"] == "https://ff.example.com"
+        assert server_mod.config["targets"]["firefly"]["enabled"] is True
+
 
 class TestConfigCsvPost:
     def test_save_csv_settings(self, config_client):
@@ -1079,3 +1089,75 @@ class TestConfigCsvPost:
         data = config_client.get("/config").get_json()
         assert data["csv"]["enabled"] is True
         assert data["csv"]["path"] == "/data/out"
+
+    def test_updates_in_memory_config(self, config_client):
+        import src.server as server_mod
+        config_client.post(
+            "/config/csv",
+            data=json.dumps({"enabled": True, "path": "/data/out"}),
+            content_type="application/json",
+        )
+        assert server_mod.config["targets"]["csv"]["enabled"] is True
+        assert server_mod.config["targets"]["csv"]["path"] == "/data/out"
+
+
+class TestConfigFireflyTest:
+    def test_returns_400_when_url_missing(self, config_client):
+        resp = config_client.post("/config/firefly/test")
+        assert resp.status_code == 400
+        assert resp.get_json()["ok"] is False
+
+    def test_returns_400_when_token_missing_in_body(self, config_client):
+        resp = config_client.post(
+            "/config/firefly/test",
+            data=json.dumps({"url": "https://ff.example.com"}),
+            content_type="application/json",
+        )
+        assert resp.status_code == 400
+        assert resp.get_json()["ok"] is False
+
+    def test_returns_400_when_token_missing_in_config(self, config_client):
+        config_client.post(
+            "/config/firefly",
+            data=json.dumps({"url": "https://ff.example.com"}),
+            content_type="application/json",
+        )
+        resp = config_client.post("/config/firefly/test")
+        assert resp.status_code == 400
+        assert resp.get_json()["ok"] is False
+
+    def test_uses_body_url_and_token(self, config_client):
+        with patch("firefly.FireflyClient") as MockClient:
+            MockClient.return_value.get_tags.return_value = []
+            resp = config_client.post(
+                "/config/firefly/test",
+                data=json.dumps({"url": "https://ff.example.com", "token": "tok"}),
+                content_type="application/json",
+            )
+        assert resp.status_code == 200
+        assert resp.get_json()["ok"] is True
+        MockClient.assert_called_once_with({"url": "https://ff.example.com", "token": "tok"})
+
+    def test_falls_back_to_saved_config(self, config_client):
+        config_client.post(
+            "/config/firefly",
+            data=json.dumps({"url": "https://ff.example.com", "token": "tok"}),
+            content_type="application/json",
+        )
+        with patch("firefly.FireflyClient") as MockClient:
+            MockClient.return_value.get_tags.return_value = []
+            resp = config_client.post("/config/firefly/test")
+        assert resp.status_code == 200
+        assert resp.get_json()["ok"] is True
+
+    def test_returns_502_when_firefly_unreachable(self, config_client):
+        with patch("firefly.FireflyClient") as MockClient:
+            MockClient.return_value.get_tags.side_effect = Exception("Connection refused")
+            resp = config_client.post(
+                "/config/firefly/test",
+                data=json.dumps({"url": "https://ff.example.com", "token": "tok"}),
+                content_type="application/json",
+            )
+        assert resp.status_code == 502
+        assert resp.get_json()["ok"] is False
+        assert "Connection refused" in resp.get_json()["error"]
