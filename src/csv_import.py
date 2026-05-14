@@ -13,7 +13,7 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-_CONFIG_PATH = os.environ.get("TXPORTER_CONFIG", "/home/txporter/config/banks.json")
+_CONFIG_PATH = os.environ.get("TXPORTER_CONFIG", "/home/txporter/config/config.json")
 MAPPINGS_PATH = os.environ.get(
     "TXPORTER_CSV_MAPPINGS",
     os.path.join(os.path.dirname(_CONFIG_PATH), "csv_mappings.json"),

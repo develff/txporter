@@ -1,0 +1,14 @@
+{
+  "accounts": [],
+  "targets": {
+    "firefly": {
+      "enabled": false,
+      "url": "http://firefly:8080",
+      "token": ""
+    },
+    "csv": {
+      "enabled": false,
+      "path": "/home/txporter/output"
+    }
+  }
+}

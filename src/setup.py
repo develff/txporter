@@ -15,6 +15,8 @@ import termios
 import time
 from typing import Optional
 
+import config as _config
+
 logger = logging.getLogger(__name__)
 
 _PTY_CHOICE_PROMPT = b"Please enter your choice:"
@@ -22,7 +24,7 @@ _PTY_STALE_LOCK    = b"Possible Stale Lock"
 _PTY_TAN_INPUT     = b"Input:"
 
 PINFILE = os.environ.get("TXPORTER_PINFILE", "/home/txporter/config/pinfile")
-CONFIG_PATH = os.environ.get("TXPORTER_CONFIG", "/home/txporter/config/banks.json")
+CONFIG_PATH = os.environ.get("TXPORTER_CONFIG", "/home/txporter/config/config.json")
 PROFILES_PATH = os.environ.get("TXPORTER_PROFILES", "/home/txporter/config/bank_profiles.json")
 
 
@@ -45,7 +47,7 @@ def _write_pin(pinfile: str, blz: str, login: str, pin: str):
     except FileNotFoundError:
         pass
     for i, line in enumerate(lines):
-        if line.startswith(f"{key} ") or line.startswith(f"{key}="):
+        if line.startswith((f"{key} ", f"{key}=")):
             lines[i] = entry
             break
     else:
@@ -145,14 +147,11 @@ def _parse_cert_info(output: str) -> dict:
 
 
 def load_config() -> dict:
-    with open(CONFIG_PATH) as f:
-        return json.load(f)
+    return _config.load_config(CONFIG_PATH)
 
 
-def save_config(config: dict):
-    with open(CONFIG_PATH, "w") as f:
-        json.dump(config, f, indent=2)
-        f.write("\n")
+def save_config(cfg: dict) -> None:
+    _config.save_config(cfg, CONFIG_PATH)
 
 
 class SetupSession:
