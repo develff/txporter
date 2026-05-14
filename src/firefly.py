@@ -115,10 +115,11 @@ class FireflyClient:
         currency = transactions[0].get("currency_code", "EUR")
         account_name = account.get("name", "")
         firefly_account_id = self._ensure_asset_account(account_name, currency, account)
-        existing_ids = self._fetch_existing_external_ids(firefly_account_id)
+        start_date = self._dedup_start_date(transactions)
+        existing_ids = self._fetch_existing_external_ids(firefly_account_id, start_date)
         logger.info(
-            "Firefly account '%s': %d existing external_ids loaded",
-            account_name, len(existing_ids),
+            "Firefly account '%s': %d existing external_ids loaded (since %s)",
+            account_name, len(existing_ids), start_date or "all time",
         )
 
         for tx in transactions:
@@ -130,6 +131,9 @@ class FireflyClient:
             result = self._create_transaction(tx, account, firefly_account_id)
             if result is True:
                 imported += 1
+                logger.info("Imported: %s  %s  %.2f %s",
+                            tx.get("date", ""), ext_id,
+                            tx.get("amount_eur", 0), tx.get("currency_code", ""))
                 if ext_id:
                     existing_ids.add(ext_id)
             elif result is None:
@@ -240,11 +244,14 @@ class FireflyClient:
 
     def _fetch_existing_external_ids(self, firefly_account_id: str | None,
                                      start_date: str | None = None) -> set:
-        """Fetch external_ids of existing transactions for the given asset account.
+        """Fetch external_ids of all existing transactions globally.
+
+        Uses the global transactions endpoint so that transactions Firefly reclassifies
+        to a different account (e.g. deposit routed to PayPal-Transit instead of the
+        source asset account) are still found and deduplicated.
 
         start_date (YYYY-MM-DD): if provided, only transactions on or after this date
-        are queried — sufficient for dedup within a bounded sync window and much faster
-        than fetching the full history.
+        are queried — sufficient for dedup within a bounded sync window.
         """
         if firefly_account_id is None:
             return set()
@@ -255,13 +262,13 @@ class FireflyClient:
             params_base["start"] = start_date
         while True:
             response = requests.get(
-                f"{self.base_url}/api/v1/accounts/{firefly_account_id}/transactions",
+                f"{self.base_url}/api/v1/transactions",
                 headers=self.headers,
                 params={**params_base, "page": page},
             )
             if not response.ok:
-                logger.warning("Could not fetch transactions for account %s (page %d): %s",
-                               firefly_account_id, page, response.status_code)
+                logger.warning("Could not fetch global transactions (page %d): %s",
+                               page, response.status_code)
                 break
             data = response.json()
             rows = data.get("data", [])

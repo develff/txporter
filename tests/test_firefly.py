@@ -297,6 +297,19 @@ class TestDedupStartDate:
         call_params = mock_get.call_args.kwargs["params"]
         assert "start" not in call_params
 
+    def test_fetch_uses_global_transactions_endpoint(self):
+        """Global /api/v1/transactions endpoint is used so transactions reclassified
+        to a different account (e.g. PayPal-Transit) are still found."""
+        client = FireflyClient(CONFIG)
+        mock_resp = MagicMock()
+        mock_resp.ok = True
+        mock_resp.json.return_value = {"data": [], "meta": {"pagination": {"total_pages": 1}}}
+        with patch("src.firefly.requests.get", return_value=mock_resp) as mock_get:
+            client._fetch_existing_external_ids("42", start_date="2026-04-13")
+        url = mock_get.call_args.args[0]
+        assert url.endswith("/api/v1/transactions")
+        assert "/accounts/" not in url
+
 
 class TestGetTags:
     def _mock_get(self, pages):
@@ -531,6 +544,18 @@ class TestImportTransactions:
             result = client.import_transactions(txs, ACCOUNT)
         assert result["found"] == 3
         assert result["imported"] == 3
+
+    def test_passes_start_date_to_fetch(self):
+        """import_transactions computes start_date from batch and passes it to dedup query."""
+        client = self._client()
+        tx = make_tx(date="20260420")
+        with self._mock_ensure(), \
+             patch("src.firefly.FireflyClient._fetch_existing_external_ids", return_value=set()) as mock_fetch, \
+             patch("src.firefly.FireflyClient._create_transaction", return_value=True):
+            client.import_transactions([tx], ACCOUNT)
+        _, kwargs = mock_fetch.call_args
+        # start_date should be 20260420 minus 7 buffer days = 2026-04-13
+        assert mock_fetch.call_args[0][1] == "2026-04-13"
 
 
 class TestEnsureAssetAccount:
