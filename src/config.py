@@ -72,7 +72,7 @@ def ensure_config_exists(path: str = None) -> None:
         save_config({
             "accounts": [],
             "targets": {
-                "firefly": {"enabled": False, "url": "http://firefly:8080", "token": ""},  # NOSONAR: internal Docker service name, HTTPS not applicable
+                "firefly": {"enabled": False, "url": "", "token": ""},
                 "csv": {"enabled": False, "path": "/home/txporter/output"},
             },
         }, path)
