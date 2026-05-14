@@ -127,10 +127,13 @@ class FireflyClient:
                 logger.debug("Skipping duplicate external_id=%s", ext_id)
                 skipped += 1
                 continue
-            if self._create_transaction(tx, account, firefly_account_id):
+            result = self._create_transaction(tx, account, firefly_account_id)
+            if result is True:
                 imported += 1
                 if ext_id:
                     existing_ids.add(ext_id)
+            elif result is None:
+                skipped += 1
             else:
                 errors += 1
 
@@ -275,12 +278,15 @@ class FireflyClient:
             page += 1
         return external_ids
 
-    def _create_transaction(self, tx: dict, account: dict, firefly_account_id: str | None = None) -> bool:
-        """Create a single transaction in Firefly III. Returns True on success, False on skip/error."""
+    def _create_transaction(self, tx: dict, account: dict, firefly_account_id: str | None = None) -> bool | None:
+        """Create a single transaction in Firefly III.
+
+        Returns True on success, None if skipped (zero amount), False on API error.
+        """
         amount_eur = tx.get("amount_eur", 0.0)
         if not amount_eur:
             logger.debug("Skipping zero-amount transaction external_id=%s", tx.get("external_id"))
-            return False
+            return None
         is_withdrawal = amount_eur < 0
         tx_type = "withdrawal" if is_withdrawal else "deposit"
         amount = f"{abs(amount_eur):.2f}"

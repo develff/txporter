@@ -503,14 +503,24 @@ class TestImportTransactions:
         assert result["skipped"] == 1
         assert result["imported"] == 0
 
-    def test_skips_when_create_returns_false(self):
+    def test_counts_error_when_create_returns_false(self):
         client = self._client()
-        tx = make_tx(amount_eur=0.0)
+        tx = make_tx()
         with self._mock_ensure(), self._mock_fetch(), \
              patch("src.firefly.FireflyClient._create_transaction", return_value=False):
             result = client.import_transactions([tx], ACCOUNT)
         assert result["errors"] == 1
         assert result["skipped"] == 0
+        assert result["imported"] == 0
+
+    def test_counts_skipped_when_create_returns_none(self):
+        client = self._client()
+        tx = make_tx(amount_eur=0.0)
+        with self._mock_ensure(), self._mock_fetch(), \
+             patch("src.firefly.FireflyClient._create_transaction", return_value=None):
+            result = client.import_transactions([tx], ACCOUNT)
+        assert result["skipped"] == 1
+        assert result["errors"] == 0
         assert result["imported"] == 0
 
     def test_counts_found_correctly(self):
