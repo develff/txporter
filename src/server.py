@@ -84,7 +84,7 @@ def _fire_webhook(webhook_url: str, account_id: str, error: str) -> None:
             "timestamp": datetime.now(timezone.utc).strftime(_ISO_DATETIME_FMT),
         }, timeout=10)
         logger.info(f"Webhook fired for {account_id}: {error}")
-    except Exception as e:
+    except Exception:
         logger.exception(f"Webhook POST failed for {account_id}")
 
 
@@ -148,7 +148,7 @@ def _scheduler_loop() -> None:
                     _scheduler_last_run = run_key
                     logger.info(f"Scheduler triggering sync at {now.strftime('%H:%M:%S')}")
                     threading.Thread(target=_run_scheduled_sync, daemon=True).start()
-        except Exception as e:
+        except Exception:
             logger.exception("Scheduler check error")
         _time.sleep(30)
 
