@@ -481,6 +481,9 @@
 <header>
   <h1>txporter</h1>
   <div style="display:flex;align-items:center;gap:8px">
+    <a id="firefly-link" href="#" target="_blank" rel="noopener" style="display:none">
+      <button class="btn-secondary btn-sm" type="button">Open Firefly →</button>
+    </a>
     <div id="scheduler-bar">
       <span id="scheduler-bar-label"></span>
       <button class="btn-secondary btn-sm" onclick="openSchedulerModal()" style="border-color:#bbf7d0;color:#166534">Configure</button>
@@ -2519,6 +2522,7 @@ async function saveFirefly() {
     settingsState.cfg = await api("GET", "/config");
     renderSettings();
     updateFireflyWarning(settingsState.cfg);
+    updateFireflyLink(settingsState.cfg);
   } catch(e) {
     alert("Failed to save: " + e.message);
   }
@@ -2542,6 +2546,19 @@ function updateFireflyWarning(cfg) {
   el.style.display = (ff.url && !ff.token) ? "" : "none";
 }
 
+function updateFireflyLink(cfg) {
+  const el = document.getElementById("firefly-link");
+  if (!el) return;
+  const url = ((cfg || {}).firefly || {}).url || "";
+  const browserUrl = url.replace("host.docker.internal", "localhost").replace(/\/$/, "");
+  if (browserUrl) {
+    el.href = browserUrl;
+    el.style.display = "";
+  } else {
+    el.style.display = "none";
+  }
+}
+
 // ── Init ───────────────────────────────────────────────────────────────────────
 async function init() {
   await loadAccounts();
@@ -2554,6 +2571,7 @@ async function init() {
     const cfg = await api("GET", "/config");
     settingsState.cfg = cfg;
     updateFireflyWarning(cfg);
+    updateFireflyLink(cfg);
   } catch {}
   // Pre-load fields list in background so CSV tab is instant
   loadCsvFields().catch(() => {});
