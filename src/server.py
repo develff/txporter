@@ -180,6 +180,7 @@ def config_get():
         "firefly": {
             "url": firefly.get("url", ""),
             "token": firefly.get("token", ""),
+            "browser_url": firefly.get("browser_url", ""),
         },
         "csv": {
             "path": csv_target.get("path", "/home/txporter/output"),
@@ -198,6 +199,8 @@ def config_firefly_post():
         firefly["url"] = str(body["url"]).strip()
     if "token" in body:
         firefly["token"] = str(body["token"]).strip()
+    if "browser_url" in body:
+        firefly["browser_url"] = str(body["browser_url"]).strip()
     bank_setup.save_config(cfg)
     config["targets"] = cfg["targets"]
     return jsonify({"ok": True})
