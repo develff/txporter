@@ -39,6 +39,7 @@ txporter was created because I wanted a single tool to sync all my financial acc
 |--------|--------|
 | Firefly III (REST API) | ✅ working |
 | CSV file | ✅ working |
+| CSV / JSON download | ✅ working |
 
 ## Screenshots
 
@@ -143,10 +144,6 @@ curl -X POST http://localhost:8090/sync/dkb/confirm
 # Sync all accounts
 curl -X POST http://localhost:8090/sync
 ```
-
-### Transaction Export
-
-After a sync you can download the fetched transactions directly from the Web UI — as **CSV** or **JSON** — without importing them into Firefly III. Use this to inspect what txporter would import, or as a backup.
 
 ### CSV Import
 
