@@ -1001,7 +1001,7 @@ def _forward_to_targets(transactions: list, account: dict) -> dict:
             os.makedirs(path, exist_ok=True)
             filename = f"{path}/{account['id']}.csv"
             with open(filename, "w", newline="") as f:
-                writer = csv_module.DictWriter(f, fieldnames=["date", "amount", "description", "iban"])
+                writer = csv_module.DictWriter(f, fieldnames=["date", "amount", "description", "iban"], extrasaction="ignore")
                 writer.writeheader()
                 writer.writerows(transactions)
             logger.info(f"Wrote {len(transactions)} transactions to {filename}")
