@@ -445,7 +445,7 @@ class TestForwardToTargets:
         orig_targets = server_mod.config["targets"].copy()
         csv_path = str(tmp_path / "output")
         server_mod.config["targets"] = {
-            "csv": {"enabled": True, "path": csv_path},
+            "csv": {"path": csv_path},
         }
         account = {"id": "testaccount"}
         transactions = [{"date": "20260101", "amount": 10.0, "description": "test", "iban": "DE123"}]
@@ -453,12 +453,11 @@ class TestForwardToTargets:
         assert (tmp_path / "output" / "testaccount.csv").exists()
         server_mod.config["targets"] = orig_targets
 
-    def test_disabled_target_is_skipped(self, tmp_path):
+    def test_unconfigured_target_is_skipped(self, tmp_path):
         import src.server as server_mod
         orig_targets = server_mod.config["targets"].copy()
-        csv_path = str(tmp_path / "output")
         server_mod.config["targets"] = {
-            "csv": {"enabled": False, "path": csv_path},
+            "csv": {"path": ""},
         }
         server_mod._forward_to_targets([], {"id": "acc"})
         assert not (tmp_path / "output").exists()
@@ -982,8 +981,8 @@ def config_client(tmp_path):
     initial = {
         "accounts": [],
         "targets": {
-            "firefly": {"enabled": False, "url": "", "token": ""},
-            "csv": {"enabled": False, "path": "/home/txporter/output"},
+            "firefly": {"url": "", "token": ""},
+            "csv": {"path": "/home/txporter/output"},
         },
     }
     config_path = str(tmp_path / "config.json")
@@ -1012,14 +1011,12 @@ class TestConfigGet:
     def test_firefly_fields_present(self, config_client):
         resp = config_client.get("/config")
         ff = resp.get_json()["firefly"]
-        assert "enabled" in ff
         assert "url" in ff
         assert "token" in ff
 
     def test_csv_fields_present(self, config_client):
         resp = config_client.get("/config")
         csv = resp.get_json()["csv"]
-        assert "enabled" in csv
         assert "path" in csv
 
 
@@ -1036,38 +1033,21 @@ class TestConfigFireflyPost:
     def test_values_persisted(self, config_client):
         config_client.post(
             "/config/firefly",
-            data=json.dumps({"url": "https://ff.example.com", "token": "tok123", "enabled": True}),
+            data=json.dumps({"url": "https://ff.example.com", "token": "tok123"}),
             content_type="application/json",
         )
         data = config_client.get("/config").get_json()
         assert data["firefly"]["url"] == "https://ff.example.com"
         assert data["firefly"]["token"] == "tok123"
-        assert data["firefly"]["enabled"] is True
-
-    def test_partial_update(self, config_client):
-        config_client.post(
-            "/config/firefly",
-            data=json.dumps({"url": "https://ff.example.com", "token": "tok"}),
-            content_type="application/json",
-        )
-        config_client.post(
-            "/config/firefly",
-            data=json.dumps({"enabled": True}),
-            content_type="application/json",
-        )
-        data = config_client.get("/config").get_json()
-        assert data["firefly"]["url"] == "https://ff.example.com"
-        assert data["firefly"]["enabled"] is True
 
     def test_updates_in_memory_config(self, config_client):
         import src.server as server_mod
         config_client.post(
             "/config/firefly",
-            data=json.dumps({"url": "https://ff.example.com", "token": "tok", "enabled": True}),
+            data=json.dumps({"url": "https://ff.example.com", "token": "tok"}),
             content_type="application/json",
         )
         assert server_mod.config["targets"]["firefly"]["url"] == "https://ff.example.com"
-        assert server_mod.config["targets"]["firefly"]["enabled"] is True
 
 
 class TestConfigCsvPost:
@@ -1083,21 +1063,19 @@ class TestConfigCsvPost:
     def test_values_persisted(self, config_client):
         config_client.post(
             "/config/csv",
-            data=json.dumps({"enabled": True, "path": "/data/out"}),
+            data=json.dumps({"path": "/data/out"}),
             content_type="application/json",
         )
         data = config_client.get("/config").get_json()
-        assert data["csv"]["enabled"] is True
         assert data["csv"]["path"] == "/data/out"
 
     def test_updates_in_memory_config(self, config_client):
         import src.server as server_mod
         config_client.post(
             "/config/csv",
-            data=json.dumps({"enabled": True, "path": "/data/out"}),
+            data=json.dumps({"path": "/data/out"}),
             content_type="application/json",
         )
-        assert server_mod.config["targets"]["csv"]["enabled"] is True
         assert server_mod.config["targets"]["csv"]["path"] == "/data/out"
 
 
@@ -1161,3 +1139,122 @@ class TestConfigFireflyTest:
         assert resp.status_code == 502
         assert resp.get_json()["ok"] is False
         assert "Connection refused" in resp.get_json()["error"]
+
+
+class TestTargetIsActive:
+    def test_firefly_active_when_url_and_token_set(self):
+        import src.server as server_mod
+        assert server_mod._target_is_active("firefly", {"url": "http://ff", "token": "t"}) is True
+
+    def test_firefly_inactive_when_url_missing(self):
+        import src.server as server_mod
+        assert server_mod._target_is_active("firefly", {"url": "", "token": "t"}) is False
+
+    def test_firefly_inactive_when_token_missing(self):
+        import src.server as server_mod
+        assert server_mod._target_is_active("firefly", {"url": "http://ff", "token": ""}) is False
+
+    def test_csv_active_when_path_set(self):
+        import src.server as server_mod
+        assert server_mod._target_is_active("csv", {"path": "/some/path"}) is True
+
+    def test_csv_inactive_when_path_empty(self):
+        import src.server as server_mod
+        assert server_mod._target_is_active("csv", {"path": ""}) is False
+
+    def test_unknown_target_returns_false(self):
+        import src.server as server_mod
+        assert server_mod._target_is_active("other", {"enabled": True}) is False
+
+
+class TestWriteImportReport:
+    def test_returns_none_for_empty_rows(self, tmp_path):
+        import src.server as server_mod
+        with patch.object(server_mod, "_REPORT_DIR", str(tmp_path / "reports")):
+            result = server_mod._write_import_report([], {"id": "acc"})
+        assert result is None
+
+    def test_writes_csv_and_returns_url(self, tmp_path):
+        import src.server as server_mod
+        rows = [{"date": "20260101", "amount_eur": -10.0, "firefly_status": "imported"}]
+        with patch.object(server_mod, "_REPORT_DIR", str(tmp_path / "reports")):
+            result = server_mod._write_import_report(rows, {"id": "myacc"})
+        assert result is not None
+        assert result.startswith("/import-report/import_myacc_")
+        assert result.endswith(".csv")
+        # file must exist on disk
+        filename = result.split("/")[-1]
+        assert (tmp_path / "reports" / filename).exists()
+
+    def test_returns_none_on_write_error(self, tmp_path):
+        import src.server as server_mod
+        rows = [{"date": "20260101", "firefly_status": "imported"}]
+        with patch.object(server_mod, "_REPORT_DIR", str(tmp_path / "reports")), \
+             patch("builtins.open", side_effect=OSError("disk full")):
+            result = server_mod._write_import_report(rows, {"id": "acc"})
+        assert result is None
+
+
+class TestDownloadImportReport:
+    def test_returns_csv_file(self, sync_client, tmp_path):
+        import src.server as server_mod
+        report_dir = tmp_path / "reports"
+        report_dir.mkdir()
+        filename = "import_acc_20260101_120000.csv"
+        (report_dir / filename).write_text("date,amount_eur\n20260101,-5.0\n")
+        with patch.object(server_mod, "_REPORT_DIR", str(report_dir)):
+            resp = sync_client.get(f"/import-report/{filename}")
+        assert resp.status_code == 200
+        assert b"date" in resp.data
+
+    def test_returns_404_for_missing_file(self, sync_client, tmp_path):
+        import src.server as server_mod
+        with patch.object(server_mod, "_REPORT_DIR", str(tmp_path / "reports")):
+            resp = sync_client.get("/import-report/import_acc_20260101_120000.csv")
+        assert resp.status_code == 404
+
+    def test_returns_400_for_non_csv_extension(self, sync_client):
+        resp = sync_client.get("/import-report/import_acc_20260101_120000.sh")
+        assert resp.status_code == 400
+
+    def test_returns_400_for_wrong_prefix(self, sync_client):
+        resp = sync_client.get("/import-report/report.csv")
+        assert resp.status_code == 400
+
+
+class TestForwardToTargetsReportUrl:
+    def test_report_url_included_in_stats(self, tmp_path):
+        import src.server as server_mod
+        orig_targets = server_mod.config["targets"].copy()
+        server_mod.config["targets"] = {
+            "firefly": {"url": "https://ff.example.com", "token": "t"},
+        }
+        mock_ff = MagicMock()
+        mock_ff.import_transactions.return_value = {
+            "found": 1, "imported": 1, "skipped": 0, "errors": 0,
+            "rows": [{"date": "20260101", "amount_eur": -5.0, "firefly_status": "imported"}],
+        }
+        with patch("firefly.FireflyClient", return_value=mock_ff), \
+             patch.object(server_mod, "_REPORT_DIR", str(tmp_path / "reports")):
+            stats = server_mod._forward_to_targets([{"external_id": "x"}], {"id": "acc", "name": "acc"})
+        assert "report_url" in stats
+        assert stats["report_url"].startswith("/import-report/")
+        assert "rows" not in stats
+        server_mod.config["targets"] = orig_targets
+
+    def test_no_report_url_when_rows_empty(self, tmp_path):
+        import src.server as server_mod
+        orig_targets = server_mod.config["targets"].copy()
+        server_mod.config["targets"] = {
+            "firefly": {"url": "https://ff.example.com", "token": "t"},
+        }
+        mock_ff = MagicMock()
+        mock_ff.import_transactions.return_value = {
+            "found": 0, "imported": 0, "skipped": 0, "errors": 0, "rows": [],
+        }
+        with patch("firefly.FireflyClient", return_value=mock_ff), \
+             patch.object(server_mod, "_REPORT_DIR", str(tmp_path / "reports")):
+            stats = server_mod._forward_to_targets([], {"id": "acc", "name": "acc"})
+        assert "report_url" not in stats
+        assert "rows" not in stats
+        server_mod.config["targets"] = orig_targets

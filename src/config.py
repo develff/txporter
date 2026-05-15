@@ -79,7 +79,7 @@ def ensure_config_exists(path: str = None) -> None:
     save_config({
         "accounts": [],
         "targets": {
-            "firefly": {"enabled": False, "url": "", "token": ""},
-            "csv": {"enabled": False, "path": "/home/txporter/output"},
+            "firefly": {"url": "", "token": ""},
+            "csv": {"path": "/home/txporter/output"},
         },
     }, path)
