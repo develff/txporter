@@ -144,6 +144,10 @@ curl -X POST http://localhost:8090/sync/dkb/confirm
 curl -X POST http://localhost:8090/sync
 ```
 
+### Transaction Export
+
+After a sync you can download the fetched transactions directly from the Web UI — as **CSV** or **JSON** — without importing them into Firefly III. Use this to inspect what txporter would import, or as a backup.
+
 ### CSV Import
 
 Upload any CSV export (e.g. Crypto.com, N26 export) via the Web UI. A 3-step wizard lets you map CSV columns to Firefly III fields and save reusable profiles.
