@@ -1152,11 +1152,22 @@ function triggerDownload(transactions, format, accountId) {
     mime = "application/json";
     ext = "json";
   } else {
-    const fields = ["date", "amount_eur", "currency_code", "remote_name", "purpose", "remote_iban", "external_id"];
+    const fields = [
+      "date", "valuta_date", "amount_eur", "currency_code",
+      "description", "remote_name", "remote_iban", "remote_account_number",
+      "external_id", "end_to_end_reference", "primanota",
+      "category_name", "budget_name", "tags",
+      "foreign_amount", "foreign_currency_code",
+    ];
     const csvRows = [fields.join(",")];
     for (const tx of transactions) {
+      const row = {...tx};
+      if (!row.description) {
+        const t = row.transaction_text || "", p = row.purpose || "";
+        row.description = t && p ? `${t} – ${p}` : (t || p || "");
+      }
       csvRows.push(fields.map(f => {
-        const v = tx[f] ?? "";
+        const v = row[f] ?? "";
         return String(v).includes(",") || String(v).includes('"') ? `"${String(v).replaceAll('"', '""')}"` : v;
       }).join(","));
     }
