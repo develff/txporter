@@ -24,15 +24,14 @@ WORKDIR /home/txporter
 # process cannot modify its own source files.
 COPY src/ ./src/
 COPY scripts/ ./scripts/
-COPY config/bank_profiles.json ./config/bank_profiles.json
+COPY config/bank_profiles.json ./bank_profiles.json
 RUN chmod -R 755 src/ scripts/ && \
-    chmod 644 config/bank_profiles.json && \
-    chown -R root:root src/ scripts/ config/
-
-USER txporter
+    chmod 644 bank_profiles.json && \
+    chown -R root:root src/ scripts/ bank_profiles.json
 
 EXPOSE 8090
 
+ENTRYPOINT ["/home/txporter/scripts/entrypoint.sh"]
 # workers=1: global state (_pending_syncs, _running_proc) must not be shared across workers.
 # timeout=300: bank syncs can take up to ~210 s (90 s drain + 120 s complete_fetch).
 CMD ["gunicorn", "--chdir", "src", "--bind", "0.0.0.0:8090", "--workers", "1", "--timeout", "300", "server:app"]

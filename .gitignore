@@ -1,9 +1,11 @@
 # Config with credentials
 config/banks.json
+config/config.json
 config/banks.demo.json
 config/pinfile
 config/_copy.json
 .env
+.env.firefly
 
 # Output
 output/

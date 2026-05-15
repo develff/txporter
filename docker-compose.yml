@@ -15,5 +15,4 @@ services:
 
 volumes:
   txporter_data:
-    external: true
     name: txporter_aqbanking

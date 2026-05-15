@@ -3,7 +3,9 @@ txporter - REST API server
 Exposes endpoints to trigger transaction sync from financial accounts.
 """
 
+import csv as csv_module
 import json
+import os
 import re
 import threading
 import time as _time
@@ -12,9 +14,9 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import requests as _requests
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, render_template, request, send_file
 from aqbanking import AqBankingClient, aqbanking_is_busy
-from config import load_config
+from config import load_config, ensure_config_exists
 import setup as bank_setup
 import logging
 
@@ -23,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024  # 16 MB cap for CSV uploads
+ensure_config_exists()
 config = load_config()
 
 _ISO_DATETIME_FMT = "%Y-%m-%dT%H:%M:%SZ"
@@ -83,8 +86,8 @@ def _fire_webhook(webhook_url: str, account_id: str, error: str) -> None:
             "timestamp": datetime.now(timezone.utc).strftime(_ISO_DATETIME_FMT),
         }, timeout=10)
         logger.info(f"Webhook fired for {account_id}: {error}")
-    except Exception as e:
-        logger.error(f"Webhook POST failed for {account_id}: {e}")
+    except Exception:
+        logger.exception(f"Webhook POST failed for {account_id}")
 
 
 def _start_pending_timeout(account_id: str, webhook_url: str) -> None:
@@ -147,8 +150,8 @@ def _scheduler_loop() -> None:
                     _scheduler_last_run = run_key
                     logger.info(f"Scheduler triggering sync at {now.strftime('%H:%M:%S')}")
                     threading.Thread(target=_run_scheduled_sync, daemon=True).start()
-        except Exception as e:
-            logger.error(f"Scheduler check error: {e}")
+        except Exception:
+            logger.exception("Scheduler check error")
         _time.sleep(30)
 
 
@@ -164,6 +167,81 @@ def index():
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok"})
+
+
+@app.route("/config", methods=["GET"])
+def config_get():
+    """Return current target configuration (Firefly + CSV)."""
+    cfg = bank_setup.load_config()
+    targets = cfg.get("targets", {})
+    firefly = targets.get("firefly", {})
+    csv_target = targets.get("csv", {})
+    return jsonify({
+        "firefly": {
+            "url": firefly.get("url", ""),
+            "token": firefly.get("token", ""),
+            "browser_url": firefly.get("browser_url", ""),
+        },
+        "csv": {
+            "path": csv_target.get("path", "/home/txporter/output"),
+        },
+    })
+
+
+@app.route("/config/firefly", methods=["POST"])
+def config_firefly_post():
+    """Save Firefly URL and token."""
+    body = request.get_json(force=True, silent=True) or {}
+    cfg = bank_setup.load_config()
+    targets = cfg.setdefault("targets", {})
+    firefly = targets.setdefault("firefly", {})
+    if "url" in body:
+        firefly["url"] = str(body["url"]).strip()
+    if "token" in body:
+        firefly["token"] = str(body["token"]).strip()
+    if "browser_url" in body:
+        firefly["browser_url"] = str(body["browser_url"]).strip()
+    bank_setup.save_config(cfg)
+    config["targets"] = cfg["targets"]
+    return jsonify({"ok": True})
+
+
+@app.route("/config/csv", methods=["POST"])
+def config_csv_post():
+    """Save CSV target settings."""
+    body = request.get_json(force=True, silent=True) or {}
+    cfg = bank_setup.load_config()
+    targets = cfg.setdefault("targets", {})
+    csv_target = targets.setdefault("csv", {})
+    if "path" in body:
+        csv_target["path"] = str(body["path"]).strip()
+    bank_setup.save_config(cfg)
+    config["targets"] = cfg["targets"]
+    return jsonify({"ok": True})
+
+
+@app.route("/config/firefly/test", methods=["POST"])
+def config_firefly_test():
+    """Test Firefly connectivity. Uses URL+token from request body, falls back to saved config."""
+    body = request.get_json(force=True, silent=True) or {}
+    if "url" in body or "token" in body:
+        url = str(body.get("url", "")).strip().rstrip("/")
+        token = str(body.get("token", "")).strip()
+    else:
+        cfg = bank_setup.load_config()
+        firefly_cfg = cfg.get("targets", {}).get("firefly", {})
+        url = firefly_cfg.get("url", "").rstrip("/")
+        token = firefly_cfg.get("token", "")
+    if not url:
+        return jsonify({"ok": False, "error": "No URL configured"}), 400
+    if not token:
+        return jsonify({"ok": False, "error": "No token configured"}), 400
+    try:
+        from firefly import FireflyClient
+        FireflyClient({"url": url, "token": token}).get_tags()
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 502
 
 
 @app.route("/scheduler", methods=["GET"])
@@ -500,18 +578,26 @@ def setup_start():
     # Write PIN to pinfile
     bank_setup._write_pin(bank_setup.PINFILE, blz, login, pin)
 
-    # Pre-create account entry in banks.json (without aqbanking_id)
-    new_account = {
-        "id": account_id,
-        "name": name,
-        "type": "fints",
-        "blz": blz,
-        "url": url,
-        "login": login,
-        "hbci_version": hbci_version,
-    }
-    if tan_mode is not None:
-        new_account["tan_mode"] = tan_mode
+    # Pre-create account entry in config.json (without aqbanking_id)
+    if profile_key:
+        new_account = {
+            "id": account_id,
+            "name": name,
+            "catalog_ref": profile_key,
+            "login": login,
+        }
+    else:
+        new_account = {
+            "id": account_id,
+            "name": name,
+            "type": "fints",
+            "blz": blz,
+            "url": url,
+            "login": login,
+            "hbci_version": hbci_version,
+        }
+        if tan_mode is not None:
+            new_account["tan_mode"] = tan_mode
     cfg["accounts"].append(new_account)
     bank_setup.save_config(cfg)
     config["accounts"] = cfg["accounts"]
@@ -535,7 +621,7 @@ def setup_start():
         cfg["accounts"] = [a for a in cfg["accounts"] if a["id"] != account_id]
         bank_setup.save_config(cfg)
         config["accounts"] = cfg["accounts"]
-        logger.error("Setup step 1 failed for %s: %s", account_id, e)
+        logger.exception("Setup step 1 failed for %s", account_id)
         return jsonify({"error": str(e)}), 500
 
     _pending_setups[setup_id] = session
@@ -560,7 +646,7 @@ def setup_acceptcert(setup_id):
     try:
         result = session.step1b_accept_cert(bool(accept))
     except Exception as e:
-        logger.error("Certificate acceptance failed for %s: %s", setup_id, e)
+        logger.exception("Certificate acceptance failed for %s", setup_id)
         if not accept:
             _pending_setups.pop(setup_id, None)
         return jsonify({"error": str(e)}), 500
@@ -586,7 +672,7 @@ def setup_tanmode(setup_id):
     try:
         result = session.step2_set_tanmode(int(tan_mode))
     except Exception as e:
-        logger.error("Setup step 2 failed for %s: %s", setup_id, e)
+        logger.exception("Setup step 2 failed for %s", setup_id)
         return jsonify({"error": str(e)}), 500
 
     return jsonify(result), 202
@@ -612,7 +698,7 @@ def setup_submit_tan(setup_id):
         result = session.step3b_submit_tan(str(tan))
     except Exception as e:
         _pending_setups[setup_id] = session  # put back so caller can retry
-        logger.error("TAN submission failed for %s: %s", setup_id, e)
+        logger.exception("TAN submission failed for %s", setup_id)
         return jsonify({"error": str(e)}), 500
 
     config["accounts"] = bank_setup.load_config()["accounts"]
@@ -630,7 +716,7 @@ def setup_confirm(setup_id):
         result = session.step3_confirm()
     except Exception as e:
         _pending_setups[setup_id] = session  # put back so caller can retry
-        logger.error("Setup step 3 failed for %s: %s", setup_id, e)
+        logger.exception("Setup step 3 failed for %s", setup_id)
         return jsonify({"error": str(e)}), 500
 
     if result.get("status") in ("pending_tan", "pending_account_select"):
@@ -660,7 +746,7 @@ def setup_select_account(setup_id):
         result = session.select_account(int(aqbanking_id))
     except Exception as e:
         _pending_setups[setup_id] = session
-        logger.error("Account selection failed for %s: %s", setup_id, e)
+        logger.exception("Account selection failed for %s", setup_id)
         return jsonify({"error": str(e)}), 500
 
     config["accounts"] = bank_setup.load_config()["accounts"]
@@ -721,7 +807,7 @@ def csv_import_route():
     try:
         transactions = parse_and_map(file.read(), mapping)
     except Exception as e:
-        logger.error("CSV parse error: %s", e)
+        logger.exception("CSV parse error")
         return jsonify({"error": str(e)}), 400
 
     account = {"name": mapping.get("account_name", "")}
@@ -770,7 +856,7 @@ def csv_mappings_delete(mapping_id):
 def get_tags():
     """Return all tag names from the configured Firefly III instance."""
     firefly_cfg = config.get("targets", {}).get("firefly")
-    if not firefly_cfg or not firefly_cfg.get("enabled"):
+    if not firefly_cfg or not (firefly_cfg.get("url") and firefly_cfg.get("token")):
         return jsonify([])
     from firefly import FireflyClient
     try:
@@ -835,7 +921,7 @@ def start_sync(account: dict, from_date: str = None, to_date: str = None, days: 
             _save_last_sync(account_id)
             return {"status": "ok", **stats}
     except Exception as e:
-        logger.error(f"Error starting sync for {account_id}: {e}")
+        logger.exception(f"Error starting sync for {account_id}")
         return {"status": "error", "message": str(e)}
 
 
@@ -856,7 +942,7 @@ def complete_sync(account_id: str, dry_run: bool = False, export_format: str = N
         _save_last_sync(account_id)
         return {"status": "ok", **stats}
     except Exception as e:
-        logger.error(f"Error completing sync for {account_id}: {e}")
+        logger.exception(f"Error completing sync for {account_id}")
         return {"status": "error", "message": str(e)}
 
 
@@ -890,27 +976,78 @@ def _save_last_sync_error(account_id: str, status: str, error: str) -> None:
         logger.warning(f"Could not save last_sync_error for {account_id}: {e}")
 
 
+def _target_is_active(name: str, cfg: dict) -> bool:
+    if name == "firefly":
+        return bool(cfg.get("url") and cfg.get("token"))
+    if name == "csv":
+        return bool(cfg.get("path"))
+    return False
+
+
 def _forward_to_targets(transactions: list, account: dict) -> dict:
-    """Forward transactions to all enabled targets. Returns import stats from Firefly (if enabled)."""
+    """Forward transactions to all configured targets. Returns import stats from Firefly (if active)."""
     stats = {}
     for target_name, target_config in config["targets"].items():
-        if not target_config.get("enabled"):
+        if not _target_is_active(target_name, target_config):
             continue
         if target_name == "firefly":
             from firefly import FireflyClient
             stats = FireflyClient(target_config).import_transactions(transactions, account)
+            report_url = _write_import_report(stats.pop("rows", []), account)
+            if report_url:
+                stats["report_url"] = report_url
         elif target_name == "csv":
-            import csv as csv_module
-            import os
             path = target_config["path"]
             os.makedirs(path, exist_ok=True)
             filename = f"{path}/{account['id']}.csv"
             with open(filename, "w", newline="") as f:
-                writer = csv_module.DictWriter(f, fieldnames=["date", "amount", "description", "iban"])
+                writer = csv_module.DictWriter(f, fieldnames=["date", "amount", "description", "iban"], extrasaction="ignore")
                 writer.writeheader()
                 writer.writerows(transactions)
             logger.info(f"Wrote {len(transactions)} transactions to {filename}")
     return stats
+
+
+_REPORT_FIELDS = [
+    "date", "valuta_date", "amount_eur", "currency_code",
+    "description", "remote_name", "remote_iban", "remote_account_number",
+    "external_id", "end_to_end_reference", "primanota",
+    "category_name", "budget_name", "tags",
+    "foreign_amount", "foreign_currency_code",
+    "firefly_status",
+]
+_REPORT_DIR = "/home/txporter/output/reports"
+
+
+def _write_import_report(rows: list, account: dict) -> str | None:
+    """Write per-transaction import report CSV. Returns the download URL or None on failure."""
+    if not rows:
+        return None
+    try:
+        os.makedirs(_REPORT_DIR, exist_ok=True)
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        filename = f"import_{account.get('id', 'unknown')}_{ts}.csv"
+        path = os.path.join(_REPORT_DIR, filename)
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            writer = csv_module.DictWriter(f, fieldnames=_REPORT_FIELDS, extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(rows)
+        logger.info("Wrote import report: %s", path)
+        return f"/import-report/{filename}"
+    except Exception:
+        logger.exception("Failed to write import report")
+        return None
+
+
+@app.route("/import-report/<filename>", methods=["GET"])
+def download_import_report(filename):
+    """Download a previously generated import report CSV."""
+    if not re.match(r'^import_[\w\-]+\.csv$', filename):
+        return jsonify({"error": "Invalid filename"}), 400
+    path = os.path.join(_REPORT_DIR, filename)
+    if not os.path.exists(path):
+        return jsonify({"error": "Report not found"}), 404
+    return send_file(path, mimetype="text/csv", as_attachment=True, download_name=filename)
 
 
 if __name__ == "__main__":

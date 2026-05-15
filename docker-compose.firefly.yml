@@ -1,0 +1,71 @@
+# All-in-one stack: txporter + Firefly III + PostgreSQL
+#
+# Setup:
+#   cp .env.firefly.example .env.firefly
+#   # Edit .env.firefly: set APP_KEY and POSTGRES_PASSWORD
+#   cp config/banks.example.json config/banks.json
+#   docker volume create txporter_aqbanking
+#   docker compose --env-file .env.firefly -f docker-compose.firefly.yml up -d
+#   # Open http://localhost:8080 → create admin account → generate API token
+#   # Set FIREFLY_TOKEN in .env.firefly and in config/banks.json targets.firefly.token
+#   # docker compose --env-file .env.firefly -f docker-compose.firefly.yml restart txporter
+#   # Open http://localhost:8090 → add bank accounts
+
+services:
+  firefly:
+    image: fireflyiii/core:latest
+    container_name: firefly
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    depends_on:
+      - firefly_db
+    environment:
+      APP_ENV: local
+      APP_URL: http://localhost:8080
+      DB_CONNECTION: pgsql
+      DB_HOST: firefly_db
+      DB_PORT: 5432
+      DB_DATABASE: firefly
+      DB_USERNAME: firefly
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      TRUSTED_PROXIES: "**"
+      DEFAULT_LANGUAGE: de_DE
+      DEFAULT_LOCALE: de_DE
+      TZ: Europe/Berlin
+    env_file: .env.firefly
+    volumes:
+      - firefly_upload:/var/www/html/storage/upload
+
+  firefly_db:
+    image: postgres:16-alpine
+    container_name: firefly_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: firefly
+      POSTGRES_USER: firefly
+    env_file: .env.firefly
+    volumes:
+      - firefly_db_data:/var/lib/postgresql/data
+
+  txporter:
+    image: ghcr.io/develff/txporter:latest
+    # For local development, replace the line above with: build: .
+    container_name: txporter
+    restart: unless-stopped
+    ports:
+      - "8090:8090"
+    depends_on:
+      - firefly
+    volumes:
+      - txporter_data:/home/txporter/.aqbanking
+      - ./config:/home/txporter/config
+      - ./output:/home/txporter/output
+    env_file: .env.firefly
+
+volumes:
+  firefly_upload:
+  firefly_db_data:
+  txporter_data:
+    external: true
+    name: txporter_aqbanking

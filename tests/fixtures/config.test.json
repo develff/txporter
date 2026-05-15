@@ -1,0 +1,11 @@
+{
+  "accounts": [
+    {
+      "id": "dkb",
+      "name": "dkb",
+      "catalog_ref": "dkb",
+      "login": "12345678"
+    }
+  ],
+  "targets": {}
+}

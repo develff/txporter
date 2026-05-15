@@ -15,11 +15,13 @@ txporter was created because I wanted a single tool to sync all my financial acc
 - Fetch transactions from German banks via FinTS/HBCI (using AqBanking)
 - Import transactions from CSV exports (e.g. Crypto.com)
 - Forward transactions to Firefly III via REST API
-- Export transactions as CSV
+- Export transactions as CSV or JSON
+- Per-sync import report CSV with transaction status (imported / skipped / error)
 - On-demand sync via REST API or Web UI
 - Scheduled automatic sync
 - Multi-account support
-- Bank account setup via REST API (no shell access needed)
+- Bank account setup via Web UI (no shell access needed)
+- "Open Firefly" quick link in the header
 
 ## Supported Sources
 
@@ -37,6 +39,7 @@ txporter was created because I wanted a single tool to sync all my financial acc
 |--------|--------|
 | Firefly III (REST API) | ✅ working |
 | CSV file | ✅ working |
+| CSV / JSON download | ✅ working |
 
 ## Screenshots
 
@@ -75,7 +78,7 @@ txporter has **no built-in authentication or authorization**. Every request to p
 **Only run txporter on a trusted local network or private Docker network.** Recommended mitigations:
 
 - Bind the port to `127.0.0.1` only (default) and access via SSH tunnel
-- Place behind a reverse proxy (Nginx, Caddy) with HTTP Basic Auth or SSO
+- Place behind a reverse proxy (Nginx, Caddy, Traefik) with HTTP Basic Auth or SSO
 - Restrict access at the firewall / Docker network level
 
 ## Requirements
@@ -90,10 +93,6 @@ txporter has **no built-in authentication or authorization**. Every request to p
 git clone https://github.com/develff/txporter.git
 cd txporter
 
-# Copy and edit config
-cp config/banks.example.json config/banks.json
-# Add your Firefly III URL and token to config/banks.json
-
 # Start the service
 docker compose up -d
 
@@ -101,23 +100,37 @@ docker compose up -d
 open http://localhost:8090
 ```
 
-The Web UI guides you through bank account setup and lets you trigger syncs manually.
+The Web UI guides you through bank account setup and Firefly III configuration.
 
-### Bank account setup (REST API)
+### Quick Start with Firefly III (all-in-one)
 
-Bank registration is done via the REST API — no shell access or manual file editing required.
+If you don't have Firefly III running yet, use the combined stack:
 
 ```bash
-# Register a bank account (profile-based)
-curl -X POST http://localhost:8090/setup \
-  -H "Content-Type: application/json" \
-  -d '{"bank": "dkb", "login": "YOUR_LOGIN", "pin": "YOUR_PIN"}'
+git clone https://github.com/develff/txporter.git
+cd txporter
 
-# Confirm the TAN in your banking app, then:
-curl -X POST http://localhost:8090/setup/{setup_id}/confirm
+# Prepare Firefly environment
+cp .env.firefly.example .env.firefly
+# Edit .env.firefly:
+#   APP_KEY=base64:$(openssl rand -base64 32)
+#   POSTGRES_PASSWORD=<choose a password>
+
+# Start all services
+docker compose --env-file .env.firefly -f docker-compose.firefly.yml up -d
 ```
 
-See [docs/setup.md](docs/setup.md) for the full setup flow including photoTAN/chipTAN banks.
+Then:
+
+1. Open **http://localhost:8080** → create your Firefly III admin account
+2. Go to **Profile → OAuth → Personal Access Tokens** → create a token
+3. Open **http://localhost:8090** → Settings → enter Firefly URL and token → Save
+
+### Bank account setup
+
+Bank registration is done via the Web UI — no shell access or manual file editing required. Open **http://localhost:8090**, click **Add account**, and follow the wizard.
+
+See [docs/setup.md](docs/setup.md) for the full setup flow including photoTAN/chipTAN banks and the underlying REST API.
 
 ### Sync
 
@@ -166,7 +179,7 @@ flowchart LR
 
 ## Configuration
 
-See [docs/configuration.md](docs/configuration.md) for details on `banks.json`, environment variables, and the full REST API reference.
+See [docs/configuration.md](docs/configuration.md) for details on environment variables and the full REST API reference.
 
 ## Built with
 
