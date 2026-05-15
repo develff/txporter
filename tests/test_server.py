@@ -1013,6 +1013,7 @@ class TestConfigGet:
         ff = resp.get_json()["firefly"]
         assert "url" in ff
         assert "token" in ff
+        assert "browser_url" in ff
 
     def test_csv_fields_present(self, config_client):
         resp = config_client.get("/config")
@@ -1039,6 +1040,24 @@ class TestConfigFireflyPost:
         data = config_client.get("/config").get_json()
         assert data["firefly"]["url"] == "https://ff.example.com"
         assert data["firefly"]["token"] == "tok123"
+
+    def test_browser_url_persisted(self, config_client):
+        config_client.post(
+            "/config/firefly",
+            data=json.dumps({"url": "http://localhost:8080", "token": "tok", "browser_url": "https://firefly.example.com"}),
+            content_type="application/json",
+        )
+        data = config_client.get("/config").get_json()
+        assert data["firefly"]["browser_url"] == "https://firefly.example.com"
+
+    def test_browser_url_empty_string_persisted(self, config_client):
+        config_client.post(
+            "/config/firefly",
+            data=json.dumps({"url": "https://ff.example.com", "token": "tok", "browser_url": ""}),
+            content_type="application/json",
+        )
+        data = config_client.get("/config").get_json()
+        assert data["firefly"]["browser_url"] == ""
 
     def test_updates_in_memory_config(self, config_client):
         import src.server as server_mod

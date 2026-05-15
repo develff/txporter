@@ -2435,8 +2435,9 @@ function renderSettings() {
   const csv = cfg.csv || {};
   const fireflyUrl = ff.url || "";
   const token = ff.token || "";
+  const browserUrlOverride = ff.browser_url || "";
   const tokenPlaceholder = token ? "••••••••••••••••" : "Paste token here";
-  const browserUrl = fireflyUrl.replace("host.docker.internal", "localhost");
+  const effectiveBrowserUrl = (browserUrlOverride || fireflyUrl.replace("host.docker.internal", "localhost")).replace(/\/$/, "");
   el.innerHTML = `
     <div class="settings-section">
       <h2>Firefly III</h2>
@@ -2449,10 +2450,21 @@ function renderSettings() {
         <label for="ff-token">Personal Access Token</label>
         <div style="display:flex;gap:8px;align-items:center">
           <input type="password" id="ff-token" value="${escHtml(token)}" placeholder="${tokenPlaceholder}" autocomplete="off" style="flex:1">
-          <a id="ff-oauth-link" href="${escHtml(browserUrl.replace(/\/$/, ""))}/profile/oauth" target="_blank" rel="noopener">
+          <a id="ff-oauth-link" href="${escHtml(effectiveBrowserUrl)}/profile/oauth" target="_blank" rel="noopener">
             <button type="button" class="btn-secondary btn-sm" id="btn-ff-get-token" ${fireflyUrl ? "" : "disabled"}>Get Token</button>
           </a>
         </div>
+      </div>
+      <div class="settings-row" style="margin-top:4px">
+        <label></label>
+        <details id="ff-advanced">
+          <summary style="cursor:pointer;color:var(--text-muted);font-size:0.85em">Advanced</summary>
+          <div style="margin-top:8px">
+            <label for="ff-browser-url" style="font-size:0.9em">Browser URL override</label>
+            <input type="url" id="ff-browser-url" value="${escHtml(browserUrlOverride)}" placeholder="https://firefly.yourdomain.com" style="margin-top:4px">
+            <span class="settings-hint">Only needed if the API URL is not reachable from your browser (e.g. SSO/reverse-proxy setup). Used for the "Open Firefly" link and "Get Token" button.</span>
+          </div>
+        </details>
       </div>
       <div class="settings-actions">
         <span id="ff-test-result"></span>
@@ -2471,16 +2483,26 @@ function renderSettings() {
       </div>
     </div>`;
 
+  function _ffUpdateOauthLink() {
+    const apiUrl = document.getElementById("ff-url").value.trim();
+    const override = (document.getElementById("ff-browser-url") || {}).value || "";
+    const base = (override.trim() || apiUrl.replace("host.docker.internal", "localhost")).replace(/\/$/, "");
+    const linkEl = document.getElementById("ff-oauth-link");
+    if (linkEl) linkEl.href = base ? `${base}/profile/oauth` : "#";
+    const getTokenBtn = document.getElementById("btn-ff-get-token");
+    if (getTokenBtn) getTokenBtn.disabled = !apiUrl.trim();
+  }
   document.getElementById("ff-url").addEventListener("input", function() {
     document.getElementById("btn-ff-save").disabled = true;
     document.getElementById("btn-ff-test").disabled = !document.getElementById("ff-token").value.trim();
     const r = document.getElementById("ff-test-result");
     r.textContent = ""; r.style.color = "";
-    const url = this.value.trim().replace("host.docker.internal", "localhost").replace(/\/$/, "");
-    const linkEl = document.getElementById("ff-oauth-link");
-    if (linkEl) linkEl.href = url ? `${url}/profile/oauth` : "#";
-    const getTokenBtn = document.getElementById("btn-ff-get-token");
-    if (getTokenBtn) getTokenBtn.disabled = !url;
+    _ffUpdateOauthLink();
+  });
+  const ffBrowserUrlEl = document.getElementById("ff-browser-url");
+  if (ffBrowserUrlEl) ffBrowserUrlEl.addEventListener("input", function() {
+    document.getElementById("btn-ff-save").disabled = false;
+    _ffUpdateOauthLink();
   });
   document.getElementById("ff-token").addEventListener("input", () => {
     document.getElementById("btn-ff-save").disabled = true;
@@ -2517,8 +2539,10 @@ async function saveFirefly() {
   const url = document.getElementById("ff-url").value.trim();
   const tokenEl = document.getElementById("ff-token");
   const token = tokenEl.value;
+  const browserUrlEl = document.getElementById("ff-browser-url");
+  const browser_url = browserUrlEl ? browserUrlEl.value.trim() : "";
   try {
-    await api("POST", "/config/firefly", { url, token });
+    await api("POST", "/config/firefly", { url, token, browser_url });
     settingsState.cfg = await api("GET", "/config");
     renderSettings();
     updateFireflyWarning(settingsState.cfg);
@@ -2549,8 +2573,10 @@ function updateFireflyWarning(cfg) {
 function updateFireflyLink(cfg) {
   const el = document.getElementById("firefly-link");
   if (!el) return;
-  const url = ((cfg || {}).firefly || {}).url || "";
-  const browserUrl = url.replace("host.docker.internal", "localhost").replace(/\/$/, "");
+  const ff = (cfg || {}).firefly || {};
+  const url = ff.url || "";
+  const override = ff.browser_url || "";
+  const browserUrl = (override || url.replace("host.docker.internal", "localhost")).replace(/\/$/, "");
   if (browserUrl) {
     el.href = browserUrl;
     el.style.display = "";
