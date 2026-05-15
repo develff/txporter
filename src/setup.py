@@ -25,7 +25,7 @@ _PTY_TAN_INPUT     = b"Input:"
 
 PINFILE = os.environ.get("TXPORTER_PINFILE", "/home/txporter/config/pinfile")
 CONFIG_PATH = os.environ.get("TXPORTER_CONFIG", "/home/txporter/config/config.json")
-PROFILES_PATH = os.environ.get("TXPORTER_PROFILES", "/home/txporter/config/bank_profiles.json")
+PROFILES_PATH = os.environ.get("TXPORTER_PROFILES", "/home/txporter/bank_profiles.json")
 
 
 def load_profiles() -> dict:

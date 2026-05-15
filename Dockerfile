@@ -24,10 +24,10 @@ WORKDIR /home/txporter
 # process cannot modify its own source files.
 COPY src/ ./src/
 COPY scripts/ ./scripts/
-COPY config/bank_profiles.json ./config/bank_profiles.json
+COPY config/bank_profiles.json ./bank_profiles.json
 RUN chmod -R 755 src/ scripts/ && \
-    chmod 644 config/bank_profiles.json && \
-    chown -R root:root src/ scripts/ config/
+    chmod 644 bank_profiles.json && \
+    chown -R root:root src/ scripts/ bank_profiles.json
 
 EXPOSE 8090
 

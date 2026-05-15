@@ -6,7 +6,7 @@ import json
 import os
 
 CONFIG_PATH = os.environ.get("TXPORTER_CONFIG", "/home/txporter/config/config.json")
-CATALOG_PATH = os.environ.get("TXPORTER_CATALOG", "/home/txporter/config/bank_profiles.json")
+CATALOG_PATH = os.environ.get("TXPORTER_CATALOG", "/home/txporter/bank_profiles.json")
 
 # Fields that live in the catalog and are stripped from user config on save
 _CATALOG_FIELDS = {"blz", "url", "hbci_version", "tan_mode", "type"}
