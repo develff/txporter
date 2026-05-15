@@ -1032,7 +1032,7 @@ def _write_import_report(rows: list, account: dict) -> str | None:
         return None
 
 
-@app.route("/import-report/<filename>")
+@app.route("/import-report/<filename>", methods=["GET"])
 def download_import_report(filename):
     """Download a previously generated import report CSV."""
     if not re.match(r'^import_[\w\-]+\.csv$', filename):
