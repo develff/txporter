@@ -445,7 +445,7 @@ class TestForwardToTargets:
         orig_targets = server_mod.config["targets"].copy()
         csv_path = str(tmp_path / "output")
         server_mod.config["targets"] = {
-            "csv": {"enabled": True, "path": csv_path},
+            "csv": {"path": csv_path},
         }
         account = {"id": "testaccount"}
         transactions = [{"date": "20260101", "amount": 10.0, "description": "test", "iban": "DE123"}]
@@ -453,12 +453,11 @@ class TestForwardToTargets:
         assert (tmp_path / "output" / "testaccount.csv").exists()
         server_mod.config["targets"] = orig_targets
 
-    def test_disabled_target_is_skipped(self, tmp_path):
+    def test_unconfigured_target_is_skipped(self, tmp_path):
         import src.server as server_mod
         orig_targets = server_mod.config["targets"].copy()
-        csv_path = str(tmp_path / "output")
         server_mod.config["targets"] = {
-            "csv": {"enabled": False, "path": csv_path},
+            "csv": {"path": ""},
         }
         server_mod._forward_to_targets([], {"id": "acc"})
         assert not (tmp_path / "output").exists()
@@ -982,8 +981,8 @@ def config_client(tmp_path):
     initial = {
         "accounts": [],
         "targets": {
-            "firefly": {"enabled": False, "url": "", "token": ""},
-            "csv": {"enabled": False, "path": "/home/txporter/output"},
+            "firefly": {"url": "", "token": ""},
+            "csv": {"path": "/home/txporter/output"},
         },
     }
     config_path = str(tmp_path / "config.json")
@@ -1012,14 +1011,12 @@ class TestConfigGet:
     def test_firefly_fields_present(self, config_client):
         resp = config_client.get("/config")
         ff = resp.get_json()["firefly"]
-        assert "enabled" in ff
         assert "url" in ff
         assert "token" in ff
 
     def test_csv_fields_present(self, config_client):
         resp = config_client.get("/config")
         csv = resp.get_json()["csv"]
-        assert "enabled" in csv
         assert "path" in csv
 
 
@@ -1036,38 +1033,21 @@ class TestConfigFireflyPost:
     def test_values_persisted(self, config_client):
         config_client.post(
             "/config/firefly",
-            data=json.dumps({"url": "https://ff.example.com", "token": "tok123", "enabled": True}),
+            data=json.dumps({"url": "https://ff.example.com", "token": "tok123"}),
             content_type="application/json",
         )
         data = config_client.get("/config").get_json()
         assert data["firefly"]["url"] == "https://ff.example.com"
         assert data["firefly"]["token"] == "tok123"
-        assert data["firefly"]["enabled"] is True
-
-    def test_partial_update(self, config_client):
-        config_client.post(
-            "/config/firefly",
-            data=json.dumps({"url": "https://ff.example.com", "token": "tok"}),
-            content_type="application/json",
-        )
-        config_client.post(
-            "/config/firefly",
-            data=json.dumps({"enabled": True}),
-            content_type="application/json",
-        )
-        data = config_client.get("/config").get_json()
-        assert data["firefly"]["url"] == "https://ff.example.com"
-        assert data["firefly"]["enabled"] is True
 
     def test_updates_in_memory_config(self, config_client):
         import src.server as server_mod
         config_client.post(
             "/config/firefly",
-            data=json.dumps({"url": "https://ff.example.com", "token": "tok", "enabled": True}),
+            data=json.dumps({"url": "https://ff.example.com", "token": "tok"}),
             content_type="application/json",
         )
         assert server_mod.config["targets"]["firefly"]["url"] == "https://ff.example.com"
-        assert server_mod.config["targets"]["firefly"]["enabled"] is True
 
 
 class TestConfigCsvPost:
@@ -1083,21 +1063,19 @@ class TestConfigCsvPost:
     def test_values_persisted(self, config_client):
         config_client.post(
             "/config/csv",
-            data=json.dumps({"enabled": True, "path": "/data/out"}),
+            data=json.dumps({"path": "/data/out"}),
             content_type="application/json",
         )
         data = config_client.get("/config").get_json()
-        assert data["csv"]["enabled"] is True
         assert data["csv"]["path"] == "/data/out"
 
     def test_updates_in_memory_config(self, config_client):
         import src.server as server_mod
         config_client.post(
             "/config/csv",
-            data=json.dumps({"enabled": True, "path": "/data/out"}),
+            data=json.dumps({"path": "/data/out"}),
             content_type="application/json",
         )
-        assert server_mod.config["targets"]["csv"]["enabled"] is True
         assert server_mod.config["targets"]["csv"]["path"] == "/data/out"
 
 

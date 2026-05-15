@@ -2434,15 +2434,6 @@ function renderSettings() {
     <div class="settings-section">
       <h2>Firefly III</h2>
       <div class="settings-row">
-        <div class="toggle-row">
-          <label for="ff-enabled">Enabled</label>
-          <label class="toggle">
-            <input type="checkbox" id="ff-enabled" ${ff.enabled ? "checked" : ""}>
-            <span class="toggle-slider"></span>
-          </label>
-        </div>
-      </div>
-      <div class="settings-row">
         <label for="ff-url">URL</label>
         <input type="url" id="ff-url" value="${escHtml(fireflyUrl)}" placeholder="https://firefly.example.com">
         <span class="settings-hint">If Firefly runs on the same machine as txporter, use <code>host.docker.internal</code> instead of <code>localhost</code>.</span>
@@ -2464,15 +2455,6 @@ function renderSettings() {
     </div>
     <div class="settings-section">
       <h2>CSV Export</h2>
-      <div class="settings-row">
-        <div class="toggle-row">
-          <label for="csv-enabled">Enabled</label>
-          <label class="toggle">
-            <input type="checkbox" id="csv-enabled" ${csv.enabled ? "checked" : ""}>
-            <span class="toggle-slider"></span>
-          </label>
-        </div>
-      </div>
       <div class="settings-row">
         <label for="csv-path">Output path</label>
         <input type="text" id="csv-path" value="${escHtml(csv.path || "/home/txporter/output")}" placeholder="/home/txporter/output">
@@ -2498,9 +2480,6 @@ function renderSettings() {
     document.getElementById("btn-ff-test").disabled = !document.getElementById("ff-token").value.trim();
     const r = document.getElementById("ff-test-result");
     r.textContent = ""; r.style.color = "";
-  });
-  document.getElementById("ff-enabled").addEventListener("change", () => {
-    document.getElementById("btn-ff-save").disabled = false;
   });
 }
 
@@ -2528,12 +2507,11 @@ async function testFirefly() {
 }
 
 async function saveFirefly() {
-  const enabled = document.getElementById("ff-enabled").checked;
   const url = document.getElementById("ff-url").value.trim();
   const tokenEl = document.getElementById("ff-token");
   const token = tokenEl.value;
   try {
-    await api("POST", "/config/firefly", { enabled, url, token });
+    await api("POST", "/config/firefly", { url, token });
     settingsState.cfg = await api("GET", "/config");
     renderSettings();
     updateFireflyWarning(settingsState.cfg);
@@ -2543,10 +2521,9 @@ async function saveFirefly() {
 }
 
 async function saveCsv() {
-  const enabled = document.getElementById("csv-enabled").checked;
   const path = document.getElementById("csv-path").value.trim();
   try {
-    await api("POST", "/config/csv", { enabled, path });
+    await api("POST", "/config/csv", { path });
     settingsState.cfg = await api("GET", "/config");
     renderSettings();
   } catch(e) {
@@ -2558,7 +2535,7 @@ function updateFireflyWarning(cfg) {
   const el = document.getElementById("firefly-warning");
   if (!el) return;
   const ff = (cfg || {}).firefly || {};
-  el.style.display = (ff.enabled && !ff.token) ? "" : "none";
+  el.style.display = (ff.url && !ff.token) ? "" : "none";
 }
 
 // ── Init ───────────────────────────────────────────────────────────────────────

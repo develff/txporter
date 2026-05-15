@@ -176,12 +176,10 @@ def config_get():
     csv_target = targets.get("csv", {})
     return jsonify({
         "firefly": {
-            "enabled": firefly.get("enabled", False),
             "url": firefly.get("url", ""),
             "token": firefly.get("token", ""),
         },
         "csv": {
-            "enabled": csv_target.get("enabled", False),
             "path": csv_target.get("path", "/home/txporter/output"),
         },
     })
@@ -194,8 +192,6 @@ def config_firefly_post():
     cfg = bank_setup.load_config()
     targets = cfg.setdefault("targets", {})
     firefly = targets.setdefault("firefly", {})
-    if "enabled" in body:
-        firefly["enabled"] = bool(body["enabled"])
     if "url" in body:
         firefly["url"] = str(body["url"]).strip()
     if "token" in body:
@@ -212,8 +208,6 @@ def config_csv_post():
     cfg = bank_setup.load_config()
     targets = cfg.setdefault("targets", {})
     csv_target = targets.setdefault("csv", {})
-    if "enabled" in body:
-        csv_target["enabled"] = bool(body["enabled"])
     if "path" in body:
         csv_target["path"] = str(body["path"]).strip()
     bank_setup.save_config(cfg)
@@ -857,7 +851,7 @@ def csv_mappings_delete(mapping_id):
 def get_tags():
     """Return all tag names from the configured Firefly III instance."""
     firefly_cfg = config.get("targets", {}).get("firefly")
-    if not firefly_cfg or not firefly_cfg.get("enabled"):
+    if not firefly_cfg or not (firefly_cfg.get("url") and firefly_cfg.get("token")):
         return jsonify([])
     from firefly import FireflyClient
     try:
@@ -977,11 +971,19 @@ def _save_last_sync_error(account_id: str, status: str, error: str) -> None:
         logger.warning(f"Could not save last_sync_error for {account_id}: {e}")
 
 
+def _target_is_active(name: str, cfg: dict) -> bool:
+    if name == "firefly":
+        return bool(cfg.get("url") and cfg.get("token"))
+    if name == "csv":
+        return bool(cfg.get("path"))
+    return False
+
+
 def _forward_to_targets(transactions: list, account: dict) -> dict:
-    """Forward transactions to all enabled targets. Returns import stats from Firefly (if enabled)."""
+    """Forward transactions to all configured targets. Returns import stats from Firefly (if active)."""
     stats = {}
     for target_name, target_config in config["targets"].items():
-        if not target_config.get("enabled"):
+        if not _target_is_active(target_name, target_config):
             continue
         if target_name == "firefly":
             from firefly import FireflyClient
