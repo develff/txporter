@@ -2451,7 +2451,7 @@ function renderSettings() {
         <label for="ff-token">Personal Access Token</label>
         <div style="display:flex;gap:8px;align-items:center">
           <input type="password" id="ff-token" value="${escHtml(token)}" placeholder="${tokenPlaceholder}" autocomplete="off" style="flex:1">
-          <a id="ff-oauth-link" href="${escHtml(browserUrl.replace(/\/$/, ""))}/profile#oauth" target="_blank" rel="noopener">
+          <a id="ff-oauth-link" href="${escHtml(browserUrl.replace(/\/$/, ""))}/profile/oauth" target="_blank" rel="noopener">
             <button type="button" class="btn-secondary btn-sm" id="btn-ff-get-token" ${fireflyUrl ? "" : "disabled"}>Get Token</button>
           </a>
         </div>
@@ -2489,7 +2489,7 @@ function renderSettings() {
     r.textContent = ""; r.style.color = "";
     const url = this.value.trim().replace("host.docker.internal", "localhost").replace(/\/$/, "");
     const linkEl = document.getElementById("ff-oauth-link");
-    if (linkEl) linkEl.href = url ? `${url}/profile#oauth` : "#";
+    if (linkEl) linkEl.href = url ? `${url}/profile/oauth` : "#";
     const getTokenBtn = document.getElementById("btn-ff-get-token");
     if (getTokenBtn) getTokenBtn.disabled = !url;
   });
