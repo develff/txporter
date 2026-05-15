@@ -32,19 +32,19 @@ class TestDecodeAmountEur:
 class TestExternalId:
     def test_with_both_ref_and_primanota(self):
         eid = _external_id("1000000088", "20250401", -37.76, "EUR", "REF-0001", "7000")
-        assert eid == "aqbanking:fints:1000000088:20250401:-37.76:EUR:REF-0001:7000"
+        assert eid == "txporter:1000000088:20250401:-37.76:EUR:REF-0001:7000"
 
     def test_with_ref_only(self):
         eid = _external_id("1000000088", "20250401", -37.76, "EUR", "REF-0001", "")
-        assert eid == "aqbanking:fints:1000000088:20250401:-37.76:EUR:REF-0001"
+        assert eid == "txporter:1000000088:20250401:-37.76:EUR:REF-0001"
 
     def test_with_primanota_only(self):
         eid = _external_id("1000000088", "20250401", -37.76, "EUR", "", "7000")
-        assert eid == "aqbanking:fints:1000000088:20250401:-37.76:EUR:7000"
+        assert eid == "txporter:1000000088:20250401:-37.76:EUR:7000"
 
     def test_primanota_zero_excluded(self):
         eid = _external_id("1000000088", "20250401", -37.76, "EUR", "REF-0001", "0")
-        assert eid == "aqbanking:fints:1000000088:20250401:-37.76:EUR:REF-0001"
+        assert eid == "txporter:1000000088:20250401:-37.76:EUR:REF-0001"
 
     def test_stable(self):
         args = ("1000000088", "20250401", -37.76, "EUR", "REF-0001", "7000")
@@ -59,7 +59,7 @@ class TestExternalId:
         import logging
         with caplog.at_level(logging.WARNING, logger="src.aqbanking"):
             eid = _external_id("1000000088", "20250401", -37.76, "EUR", "", "")
-        assert "aqbanking:fints:1000000088:20250401:-37.76:EUR" == eid
+        assert "txporter:1000000088:20250401:-37.76:EUR" == eid
         assert "may not be unique" in caplog.text
 
 
@@ -89,7 +89,7 @@ class TestParseCtx:
 
     def test_first_transaction_external_id(self, transactions):
         tx = transactions[0]
-        assert tx["external_id"] == "aqbanking:fints:1000000088:20250401:-20.00:EUR:REF-0001:7000"
+        assert tx["external_id"] == "txporter:1000000088:20250401:-20.00:EUR:REF-0001:7000"
 
     def test_fraction_amount(self, transactions):
         # Transaction 2: value="-25/10:EUR" → -€2.50

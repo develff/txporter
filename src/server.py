@@ -827,11 +827,15 @@ def csv_mappings_save():
     """Save or update a CSV mapping profile.
 
     Body must include 'id' and 'name'. Replaces any existing profile with the same id.
+    Built-in profiles (builtin: true) cannot be overwritten.
     """
     body = request.get_json(force=True, silent=True) or {}
     if not body.get("id") or not body.get("name"):
         return jsonify({"error": "Fields 'id' and 'name' are required"}), 400
-    from csv_import import load_mappings, save_mappings
+    from csv_import import load_builtin_profiles, load_mappings, save_mappings
+    builtin_ids = {p["id"] for p in load_builtin_profiles()}
+    if body["id"] in builtin_ids:
+        return jsonify({"error": f"Profile '{body['id']}' is a built-in profile and cannot be modified"}), 409
     mappings = load_mappings()
     mappings = [body if m["id"] == body["id"] else m for m in mappings]
     if not any(m["id"] == body["id"] for m in mappings):
@@ -842,8 +846,14 @@ def csv_mappings_save():
 
 @app.route("/csv/mappings/<mapping_id>", methods=["DELETE"])
 def csv_mappings_delete(mapping_id):
-    """Delete a saved CSV mapping profile by id."""
-    from csv_import import load_mappings, save_mappings
+    """Delete a saved CSV mapping profile by id.
+
+    Built-in profiles cannot be deleted.
+    """
+    from csv_import import load_builtin_profiles, load_mappings, save_mappings
+    builtin_ids = {p["id"] for p in load_builtin_profiles()}
+    if mapping_id in builtin_ids:
+        return jsonify({"error": f"Profile '{mapping_id}' is a built-in profile and cannot be deleted"}), 409
     mappings = load_mappings()
     updated = [m for m in mappings if m["id"] != mapping_id]
     if len(updated) == len(mappings):
