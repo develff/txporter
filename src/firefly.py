@@ -125,6 +125,8 @@ class FireflyClient:
         )
 
         for tx in transactions:
+            if not tx.get("description"):
+                tx["description"] = _build_description(tx) or "(kein Verwendungszweck)"
             ext_id = tx.get("external_id", "")
             if ext_id and ext_id in existing_ids:
                 logger.debug("Skipping duplicate external_id=%s", ext_id)

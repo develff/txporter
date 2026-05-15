@@ -1010,7 +1010,11 @@ def _forward_to_targets(transactions: list, account: dict) -> dict:
 
 _REPORT_FIELDS = [
     "date", "valuta_date", "amount_eur", "currency_code",
-    "description", "remote_name", "remote_iban", "external_id", "firefly_status",
+    "description", "remote_name", "remote_iban", "remote_account_number",
+    "external_id", "end_to_end_reference", "primanota",
+    "category_name", "budget_name", "tags",
+    "foreign_amount", "foreign_currency_code",
+    "firefly_status",
 ]
 _REPORT_DIR = "/home/txporter/output/reports"
 
