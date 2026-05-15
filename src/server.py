@@ -3,7 +3,9 @@ txporter - REST API server
 Exposes endpoints to trigger transaction sync from financial accounts.
 """
 
+import csv as csv_module
 import json
+import os
 import re
 import threading
 import time as _time
@@ -12,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import requests as _requests
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, render_template, request, send_file
 from aqbanking import AqBankingClient, aqbanking_is_busy
 from config import load_config, ensure_config_exists
 import setup as bank_setup
@@ -988,9 +990,10 @@ def _forward_to_targets(transactions: list, account: dict) -> dict:
         if target_name == "firefly":
             from firefly import FireflyClient
             stats = FireflyClient(target_config).import_transactions(transactions, account)
+            report_url = _write_import_report(stats.pop("rows", []), account)
+            if report_url:
+                stats["report_url"] = report_url
         elif target_name == "csv":
-            import csv as csv_module
-            import os
             path = target_config["path"]
             os.makedirs(path, exist_ok=True)
             filename = f"{path}/{account['id']}.csv"
@@ -1000,6 +1003,44 @@ def _forward_to_targets(transactions: list, account: dict) -> dict:
                 writer.writerows(transactions)
             logger.info(f"Wrote {len(transactions)} transactions to {filename}")
     return stats
+
+
+_REPORT_FIELDS = [
+    "date", "valuta_date", "amount_eur", "currency_code",
+    "description", "remote_name", "remote_iban", "external_id", "firefly_status",
+]
+_REPORT_DIR = "/home/txporter/output/reports"
+
+
+def _write_import_report(rows: list, account: dict) -> str | None:
+    """Write per-transaction import report CSV. Returns the download URL or None on failure."""
+    if not rows:
+        return None
+    try:
+        os.makedirs(_REPORT_DIR, exist_ok=True)
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        filename = f"import_{account.get('id', 'unknown')}_{ts}.csv"
+        path = os.path.join(_REPORT_DIR, filename)
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            writer = csv_module.DictWriter(f, fieldnames=_REPORT_FIELDS, extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(rows)
+        logger.info("Wrote import report: %s", path)
+        return f"/import-report/{filename}"
+    except Exception:
+        logger.exception("Failed to write import report")
+        return None
+
+
+@app.route("/import-report/<filename>")
+def download_import_report(filename):
+    """Download a previously generated import report CSV."""
+    if not re.match(r'^import_[\w\-]+\.csv$', filename):
+        return jsonify({"error": "Invalid filename"}), 400
+    path = os.path.join(_REPORT_DIR, filename)
+    if not os.path.exists(path):
+        return jsonify({"error": "Report not found"}), 404
+    return send_file(path, mimetype="text/csv", as_attachment=True, download_name=filename)
 
 
 if __name__ == "__main__":

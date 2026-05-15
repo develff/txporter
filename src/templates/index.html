@@ -969,12 +969,16 @@ function syncResultScreen(stats, error) {
   const imported = stats.imported ?? found;
   const skipped  = stats.skipped  ?? 0;
   const errors   = stats.errors   ?? 0;
+  const reportUrl = stats.report_url || null;
   const rows = [
     `<tr><td>Found</td><td><strong>${found}</strong></td></tr>`,
     `<tr><td>Imported</td><td><strong>${imported}</strong></td></tr>`,
     skipped > 0 ? `<tr><td>Skipped (already in Firefly)</td><td><strong>${skipped}</strong></td></tr>` : "",
     errors  > 0 ? `<tr><td>Errors (rejected by Firefly)</td><td><strong style="color:var(--danger)">${errors}</strong></td></tr>` : "",
   ].filter(Boolean).join("");
+  const reportLink = reportUrl
+    ? `<a href="${reportUrl}" download class="btn-secondary btn-sm" style="margin-right:8px">⬇ Import Report (CSV)</a>`
+    : "";
   return `
   <div class="modal-header">
     <div><div class="modal-title">Sync complete</div></div>
@@ -989,7 +993,7 @@ function syncResultScreen(stats, error) {
     </div>
   </div>
   <div class="modal-footer">
-    <button class="btn-primary" onclick="closeModal()">Close</button>
+    ${reportLink}<button class="btn-primary" onclick="closeModal()">Close</button>
   </div>`;
 }
 

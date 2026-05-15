@@ -497,7 +497,7 @@ class TestImportTransactions:
     def test_empty_transactions_returns_zeros(self):
         client = self._client()
         result = client.import_transactions([], ACCOUNT)
-        assert result == {"found": 0, "imported": 0, "skipped": 0, "errors": 0}
+        assert result == {"found": 0, "imported": 0, "skipped": 0, "errors": 0, "rows": []}
 
     def test_imports_new_transaction(self):
         client = self._client()

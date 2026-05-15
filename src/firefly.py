@@ -101,16 +101,18 @@ class FireflyClient:
     def import_transactions(self, transactions: list, account: dict) -> dict:
         """Import a list of transactions into Firefly III.
 
-        Returns {"found": N, "imported": Y, "skipped": Z, "errors": E}.
-        Skips transactions whose external_id already exists in Firefly III.
+        Returns {"found": N, "imported": Y, "skipped": Z, "errors": E, "rows": [...]}.
+        rows contains one entry per transaction with all fields plus "firefly_status"
+        (imported / skipped / error) for use in the import report CSV.
         """
         found = len(transactions)
         imported = 0
         skipped = 0
         errors = 0
+        rows = []
 
         if not transactions:
-            return {"found": 0, "imported": 0, "skipped": 0, "errors": 0}
+            return {"found": 0, "imported": 0, "skipped": 0, "errors": 0, "rows": []}
 
         currency = transactions[0].get("currency_code", "EUR")
         account_name = account.get("name", "")
@@ -127,6 +129,7 @@ class FireflyClient:
             if ext_id and ext_id in existing_ids:
                 logger.debug("Skipping duplicate external_id=%s", ext_id)
                 skipped += 1
+                rows.append({**tx, "firefly_status": "skipped"})
                 continue
             result = self._create_transaction(tx, account, firefly_account_id)
             if result is True:
@@ -136,16 +139,19 @@ class FireflyClient:
                             tx.get("amount_eur", 0), tx.get("currency_code", ""))
                 if ext_id:
                     existing_ids.add(ext_id)
+                rows.append({**tx, "firefly_status": "imported"})
             elif result is None:
                 skipped += 1
+                rows.append({**tx, "firefly_status": "skipped"})
             else:
                 errors += 1
+                rows.append({**tx, "firefly_status": "error"})
 
         logger.info(
             "Import complete: %d found, %d imported, %d skipped, %d errors",
             found, imported, skipped, errors,
         )
-        return {"found": found, "imported": imported, "skipped": skipped, "errors": errors}
+        return {"found": found, "imported": imported, "skipped": skipped, "errors": errors, "rows": rows}
 
     def _ensure_asset_account(self, name: str, currency_code: str, account: dict) -> str | None:
         """Find or create the matching asset account in Firefly III.
