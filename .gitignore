@@ -35,3 +35,16 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Coverage
+.coverage
+coverage.xml
+
+# SonarCloud scanner cache
+.sonar/
+
+# Claude Code
+.claude/
+
+# AqBanking backups
+config/pinfile.bak
