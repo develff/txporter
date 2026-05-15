@@ -17,6 +17,16 @@ from urllib.parse import unquote
 logger = logging.getLogger(__name__)
 
 PINFILE = os.environ.get("TXPORTER_PINFILE", "/home/txporter/config/pinfile")
+
+
+def _iban_from_blz(blz: str, account_number: str) -> str | None:
+    """Compute a German IBAN from BLZ and bare account number."""
+    acct_nr = account_number.strip().zfill(10)
+    if len(blz) != 8 or not blz.isdigit() or not acct_nr.isdigit() or len(acct_nr) > 10:
+        return None
+    numeric_str = blz + acct_nr + "1314" + "00"
+    check_digits = 98 - int(numeric_str) % 97
+    return f"DE{check_digits:02d}{blz}{acct_nr}"
 _AQBANKING_DIR = os.path.expanduser("~/.aqbanking")
 
 # aqbanking-cli uses a file lock on its config directory, so only one process
@@ -106,7 +116,9 @@ def _parse_ctx(output: str) -> list[dict]:
             continue
 
         amount_eur, currency = _decode_amount_eur(raw_value.group(1))
-        local_account = field("localAccountNumber")
+        local_bank_code = field("localBankCode")
+        local_account_number = field("localAccountNumber")
+        local_account = _iban_from_blz(local_bank_code, local_account_number) or local_account_number
         date = field("date")
         bank_reference = field("bankReference")
         primanota = field("primanota")
@@ -125,8 +137,8 @@ def _parse_ctx(output: str) -> list[dict]:
             "session_id": field("sessionId"),
             "group_id": field("groupId"),
             "acknowledge": field("acknowledge"),
-            "local_bank_code": field("localBankCode"),
-            "local_account_number": local_account,
+            "local_bank_code": local_bank_code,
+            "local_account_number": local_account_number,
             "remote_bank_code": field("remoteBankCode"),
             "remote_account_number": field("remoteAccountNumber"),
             "remote_iban": field("remoteIban"),

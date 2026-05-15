@@ -89,7 +89,7 @@ class TestParseCtx:
 
     def test_first_transaction_external_id(self, transactions):
         tx = transactions[0]
-        assert tx["external_id"] == "txporter:1000000088:20250401:-20.00:EUR:REF-0001:7000"
+        assert tx["external_id"] == "txporter:DE06120300001000000088:20250401:-20.00:EUR:REF-0001:7000"
 
     def test_fraction_amount(self, transactions):
         # Transaction 2: value="-25/10:EUR" → -€2.50
