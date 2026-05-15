@@ -72,7 +72,7 @@ def _decode_amount_eur(raw: str) -> tuple[float, str]:
 
 def _external_id(local_account: str, date: str, amount_eur: float, currency: str,
                  bank_reference: str, primanota: str) -> str:
-    parts = ["aqbanking", "fints", local_account, date, f"{amount_eur:.2f}:{currency}"]
+    parts = ["txporter", local_account, date, f"{amount_eur:.2f}:{currency}"]
     if bank_reference:
         parts.append(bank_reference)
     if primanota and primanota != "0":

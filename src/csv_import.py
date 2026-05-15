@@ -18,6 +18,7 @@ MAPPINGS_PATH = os.environ.get(
     "TXPORTER_CSV_MAPPINGS",
     os.path.join(os.path.dirname(_CONFIG_PATH), "csv_mappings.json"),
 )
+_BUILTIN_PROFILES_PATH = os.path.join(os.path.dirname(__file__), "bank_csv_profiles.json")
 
 # Ordered list of Firefly fields available for CSV mapping.
 # transform: "date" | "amount" | None — controls which extra options the UI shows.
@@ -39,17 +40,42 @@ FIREFLY_FIELDS = [
 ]
 
 
-def load_mappings() -> list:
-    if not os.path.exists(MAPPINGS_PATH):
+def load_builtin_profiles() -> list:
+    """Return built-in bank CSV profiles shipped with txporter."""
+    if not os.path.exists(_BUILTIN_PROFILES_PATH):
         return []
-    with open(MAPPINGS_PATH, encoding="utf-8") as f:
+    with open(_BUILTIN_PROFILES_PATH, encoding="utf-8") as f:
         return json.load(f)
 
 
+def load_mappings() -> list:
+    """Return all CSV mapping profiles: built-in profiles first, then user-saved ones."""
+    builtins = load_builtin_profiles()
+    builtin_ids = {p["id"] for p in builtins}
+    if not os.path.exists(MAPPINGS_PATH):
+        return builtins
+    with open(MAPPINGS_PATH, encoding="utf-8") as f:
+        user = json.load(f)
+    return builtins + [m for m in user if m.get("id") not in builtin_ids]
+
+
 def save_mappings(mappings: list) -> None:
+    builtin_ids = {p["id"] for p in load_builtin_profiles()}
+    user_only = [m for m in mappings if m.get("id") not in builtin_ids]
     os.makedirs(os.path.dirname(os.path.abspath(MAPPINGS_PATH)), exist_ok=True)
     with open(MAPPINGS_PATH, "w", encoding="utf-8") as f:
-        json.dump(mappings, f, indent=2, ensure_ascii=False)
+        json.dump(user_only, f, indent=2, ensure_ascii=False)
+
+
+def _iban_from_blz(blz: str, account_number: str) -> str | None:
+    """Compute a German IBAN from BLZ and account number."""
+    acct_nr = account_number.strip().lstrip("0") or "0"
+    acct_nr = acct_nr.zfill(10)
+    if len(blz) != 8 or not blz.isdigit() or not acct_nr.isdigit() or len(acct_nr) > 10:
+        return None
+    numeric_str = blz + acct_nr + "1314" + "00"
+    check_digits = 98 - int(numeric_str) % 97
+    return f"DE{check_digits:02d}{blz}{acct_nr}"
 
 
 def _open_csv(file_bytes: bytes, encoding: str, delimiter: str,
@@ -153,9 +179,17 @@ def preview_csv(file_bytes: bytes, delimiter: str = ",", encoding: str = "utf-8"
 
 
 def _resolve(row: dict, field_cfg: dict) -> str:
-    """Return the field value: fixed 'value' key takes priority over a 'column' lookup."""
+    """Return the field value: fixed 'value' key takes priority over a 'column' lookup.
+
+    When 'columns' (list) is given, values are concatenated with the 'join' separator
+    (default space), skipping empty entries.
+    """
     if "value" in field_cfg:
         return str(field_cfg["value"])
+    if "columns" in field_cfg:
+        sep = field_cfg.get("join", " ")
+        parts = [row.get(col, "") or "" for col in field_cfg["columns"]]
+        return sep.join(p.strip() for p in parts if p.strip())
     col = field_cfg.get("column", "")
     return (row.get(col) or "") if col else ""
 
@@ -189,14 +223,14 @@ def _parse_amount(value: str, decimal_sep: str = ".", thousands_sep: str = "") -
 
 def build_external_id(mapping_id: str, account_name: str, date: str,
                       amount: float, currency: str, description: str) -> str:
-    """Build a stable external_id following the same convention as HBCI imports.
+    """Build a stable external_id following the same convention as AqBanking imports.
 
-    Format: csv:{mapping_id}:{account_name}:{date}:{amount:.2f}:{currency}:{desc_hash}
+    Format: txporter:{mapping_id}:{account_name}:{date}:{amount:.2f}:{currency}:{desc_hash}
     The description hash (first 8 hex chars of SHA-256) acts as the uniqueness
     component, analogous to bank_reference in the HBCI scheme.
     """
     desc_hash = hashlib.sha256(description.encode()).hexdigest()[:8]
-    return ":".join(["csv", mapping_id, account_name, date, f"{amount:.2f}", currency, desc_hash])
+    return ":".join(["txporter", mapping_id, account_name, date, f"{amount:.2f}", currency, desc_hash])
 
 
 def parse_and_map(file_bytes: bytes, mapping: dict) -> list:
@@ -238,7 +272,15 @@ def parse_and_map(file_bytes: bytes, mapping: dict) -> list:
         ext_id_cfg = fields.get("external_id", {})
         ext_id = _resolve(row, ext_id_cfg) if ext_id_cfg else ""
         if not ext_id:
-            ext_id = build_external_id(mapping_id, account_name, date, amount, currency, description)
+            strategy = mapping.get("external_id_strategy", {})
+            if strategy.get("type") == "txporter_iban":
+                acct_nr = row.get(strategy.get("kontonummer_column", ""), "") or ""
+                iban = _iban_from_blz(strategy.get("blz", ""), acct_nr)
+                date_compact = date.replace("-", "")
+                if iban:
+                    ext_id = f"txporter:{iban}:{date_compact}:{amount:.2f}:{currency}"
+            if not ext_id:
+                ext_id = build_external_id(mapping_id, account_name, date, amount, currency, description)
 
         tx = {
             "external_id": ext_id,
@@ -249,7 +291,7 @@ def parse_and_map(file_bytes: bytes, mapping: dict) -> list:
         }
 
         # ── Optional string fields ────────────────────────────────────────────
-        for field_id in ("remote_name", "foreign_currency_code",
+        for field_id in ("remote_name", "remote_iban", "remote_bic", "foreign_currency_code",
                          "category_name", "budget_name", "tags",
                          "sepa_ct_id", "internal_reference", "notes"):
             cfg = fields.get(field_id, {})
