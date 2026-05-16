@@ -392,6 +392,7 @@
     .csv-mapping-card .card-body { flex: 1; min-width: 0; }
     .csv-mapping-card .card-name { font-weight: 600; font-size: 15px; }
     .csv-mapping-card .card-meta { color: var(--text-muted); font-size: 12px; margin-top: 3px; }
+    .csv-builtin-badge { display: inline-block; font-size: 10px; font-weight: 600; background: #e0eaff; color: var(--primary); border-radius: 4px; padding: 1px 6px; margin-left: 6px; vertical-align: middle; letter-spacing: .03em; }
 
     /* ── CSV preview table ── */
     .csv-preview-wrap { overflow-x: auto; margin-top: 12px; max-height: 220px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius); }
@@ -1848,7 +1849,7 @@ function renderCsvMappings() {
   const cards = csvState.mappings.map(m => `
     <div class="csv-mapping-card">
       <div class="card-body">
-        <div class="card-name">${esc(m.name)}</div>
+        <div class="card-name">${esc(m.name)}${m.builtin ? '<span class="csv-builtin-badge">built-in</span>' : ""}</div>
         <div class="card-meta">
           account: ${esc(m.account_name || "—")}
           &nbsp;·&nbsp; delimiter: <code>${esc(m.delimiter || ",")}</code>
@@ -1857,8 +1858,8 @@ function renderCsvMappings() {
       </div>
       <div class="card-actions">
         <button class="btn-primary btn-sm" onclick="openCsvImportModal(${esc(JSON.stringify(m.id))})">Import CSV</button>
-        <button class="btn-secondary btn-sm" onclick="openCsvEditWizard(${esc(JSON.stringify(m.id))})">Edit</button>
-        <button class="btn-danger btn-sm" onclick="deleteCsvMapping(${esc(JSON.stringify(m.id))})">Delete</button>
+        ${m.builtin ? "" : `<button class="btn-secondary btn-sm" onclick="openCsvEditWizard(${esc(JSON.stringify(m.id))})">Edit</button>`}
+        ${m.builtin ? "" : `<button class="btn-danger btn-sm" onclick="deleteCsvMapping(${esc(JSON.stringify(m.id))})">Delete</button>`}
       </div>
     </div>`).join("");
 
@@ -1866,7 +1867,8 @@ function renderCsvMappings() {
     <div style="display:flex;justify-content:flex-end;margin-bottom:14px">
       <button class="btn-primary" onclick="openCsvNewWizard()">+ New Mapping</button>
     </div>
-    ${csvState.mappings.length ? cards : '<div class="empty"><p>No mappings yet.</p><p>Create a mapping to import transactions from a CSV file.</p></div>'}`;
+    ${csvState.mappings.length ? cards : '<div class="empty"><p>No mappings yet.</p><p>Create a mapping to import transactions from a CSV file.</p></div>'}
+    <div style="margin-top:4px;font-size:12px;color:var(--text-muted)">Built-in profiles are pre-configured for common German banks and ready to use — just pick your CSV file.</div>`;
 }
 
 // ── Quick import: pick file and run against an existing mapping ────────────────
