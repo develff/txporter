@@ -17,6 +17,7 @@ from src.csv_import import (
     _parse_amount,
     _resolve,
     _iban_from_blz,
+    _iban_from_header,
 )
 
 # ── Fixtures ───────────────────────────────────────────────────────────────────
@@ -912,3 +913,75 @@ class Test1822BankExportFormat:
             assert parts[0] == "txporter"
             assert parts[1].startswith("DE")  # IBAN
             assert len(parts[2]) == 8 and parts[2].isdigit()  # YYYYMMDD
+
+
+# ── _iban_from_header ──────────────────────────────────────────────────────────
+
+_DKB_FIXTURE_BYTES = open(
+    os.path.join(os.path.dirname(__file__), "fixtures", "dkb_sample.csv"), "rb"
+).read()
+
+_DKB_BUILTIN_PROFILE = next(
+    p for p in load_builtin_profiles() if p["id"] == "dkb-girokonto"
+)
+
+
+class TestIbanFromHeader:
+    def test_extracts_iban_from_dkb_header(self):
+        iban = _iban_from_header(_DKB_FIXTURE_BYTES, "utf-8", ";", 0, 1)
+        assert iban == "DE89370400440532013000"
+
+    def test_missing_row_returns_none(self):
+        data = b"A;B\nC;D\n"
+        assert _iban_from_header(data, "utf-8", ";", 5, 1) is None
+
+    def test_missing_col_returns_none(self):
+        data = b"OnlyOneCol\n"
+        assert _iban_from_header(data, "utf-8", ";", 0, 1) is None
+
+
+# ── DKB Girokonto built-in profile ────────────────────────────────────────────
+
+class TestDKBBuiltinProfile:
+    def test_profile_present_and_builtin(self):
+        assert _DKB_BUILTIN_PROFILE.get("builtin") is True
+
+    def test_parse_all_rows(self):
+        txs = parse_and_map(_DKB_FIXTURE_BYTES, _DKB_BUILTIN_PROFILE)
+        assert len(txs) == 5
+
+    def test_date_parsed(self):
+        txs = parse_and_map(_DKB_FIXTURE_BYTES, _DKB_BUILTIN_PROFILE)
+        assert txs[0]["date"] == "2026-04-17"
+
+    def test_amount_parsed(self):
+        txs = parse_and_map(_DKB_FIXTURE_BYTES, _DKB_BUILTIN_PROFILE)
+        assert txs[0]["amount_eur"] == pytest.approx(-41.70)
+
+    def test_currency_eur(self):
+        txs = parse_and_map(_DKB_FIXTURE_BYTES, _DKB_BUILTIN_PROFILE)
+        assert all(t["currency_code"] == "EUR" for t in txs)
+
+    def test_description_mapped(self):
+        txs = parse_and_map(_DKB_FIXTURE_BYTES, _DKB_BUILTIN_PROFILE)
+        assert "VISA" in txs[0]["description"]
+
+    def test_remote_name_mapped(self):
+        txs = parse_and_map(_DKB_FIXTURE_BYTES, _DKB_BUILTIN_PROFILE)
+        assert txs[0].get("remote_name") == "Rewe Hamburg Mitte - Curve"
+
+    def test_remote_iban_mapped(self):
+        txs = parse_and_map(_DKB_FIXTURE_BYTES, _DKB_BUILTIN_PROFILE)
+        assert txs[0].get("remote_iban") == "DE75512108001245126199"
+
+    def test_external_id_uses_header_iban(self):
+        txs = parse_and_map(_DKB_FIXTURE_BYTES, _DKB_BUILTIN_PROFILE)
+        assert txs[0]["external_id"] == "txporter:DE89370400440532013000:20260417:-41.70:EUR"
+
+    def test_external_id_matches_aqbanking_format(self):
+        txs = parse_and_map(_DKB_FIXTURE_BYTES, _DKB_BUILTIN_PROFILE)
+        for tx in txs:
+            parts = tx["external_id"].split(":")
+            assert parts[0] == "txporter"
+            assert parts[1].startswith("DE")
+            assert len(parts[2]) == 8 and parts[2].isdigit()

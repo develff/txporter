@@ -52,4 +52,45 @@
       "kontonummer_column": "Kontonummer"
     }
   }
+  ,
+  {
+    "id": "dkb-girokonto",
+    "name": "DKB Girokonto",
+    "builtin": true,
+    "delimiter": ";",
+    "encoding": "utf-8",
+    "skip_rows": 4,
+    "join_multiline": false,
+    "fields": {
+      "date": {
+        "column": "Buchungsdatum",
+        "date_format": "%d.%m.%y"
+      },
+      "amount": {
+        "column": "Betrag (€)",
+        "decimal_sep": ",",
+        "thousands_sep": "."
+      },
+      "currency_code": {
+        "value": "EUR"
+      },
+      "description": {
+        "column": "Verwendungszweck"
+      },
+      "remote_name": {
+        "column": "Zahlungsempfänger*in"
+      },
+      "remote_iban": {
+        "column": "IBAN"
+      },
+      "sepa_ct_id": {
+        "column": "Kundenreferenz"
+      }
+    },
+    "external_id_strategy": {
+      "type": "txporter_iban_header",
+      "header_row": 0,
+      "header_col": 1
+    }
+  }
 ]

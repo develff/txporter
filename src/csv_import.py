@@ -67,6 +67,17 @@ def save_mappings(mappings: list) -> None:
         json.dump(user_only, f, indent=2, ensure_ascii=False)
 
 
+def _iban_from_header(file_bytes: bytes, encoding: str, delimiter: str,
+                      header_row: int, header_col: int) -> str | None:
+    """Extract an IBAN value from a pre-data header row (before skip_rows)."""
+    text = file_bytes.decode(encoding, errors="replace")
+    reader = csv.reader(io.StringIO(text), delimiter=delimiter)
+    for i, row in enumerate(reader):
+        if i == header_row:
+            return row[header_col].strip() if len(row) > header_col else None
+    return None
+
+
 def _iban_from_blz(blz: str, account_number: str) -> str | None:
     """Compute a German IBAN from BLZ and account number."""
     acct_nr = account_number.strip().lstrip("0") or "0"
@@ -249,6 +260,15 @@ def parse_and_map(file_bytes: bytes, mapping: dict) -> list:
 
     _headers, f = _open_csv(file_bytes, encoding, delimiter, skip_rows)
 
+    strategy = mapping.get("external_id_strategy", {})
+    fixed_iban = None
+    if strategy.get("type") == "txporter_iban_header":
+        fixed_iban = _iban_from_header(
+            file_bytes, encoding, delimiter,
+            strategy.get("header_row", 0),
+            strategy.get("header_col", 1),
+        )
+
     transactions = []
     for row in _iter_rows(f, _headers, delimiter, join_multiline):
         if not any(v.strip() for v in row.values() if v):
@@ -272,13 +292,15 @@ def parse_and_map(file_bytes: bytes, mapping: dict) -> list:
         ext_id_cfg = fields.get("external_id", {})
         ext_id = _resolve(row, ext_id_cfg) if ext_id_cfg else ""
         if not ext_id:
-            strategy = mapping.get("external_id_strategy", {})
+            date_compact = date.replace("-", "")
             if strategy.get("type") == "txporter_iban":
                 acct_nr = row.get(strategy.get("kontonummer_column", ""), "") or ""
                 iban = _iban_from_blz(strategy.get("blz", ""), acct_nr)
-                date_compact = date.replace("-", "")
                 if iban:
                     ext_id = f"txporter:{iban}:{date_compact}:{amount:.2f}:{currency}"
+            elif strategy.get("type") == "txporter_iban_header":
+                if fixed_iban:
+                    ext_id = f"txporter:{fixed_iban}:{date_compact}:{amount:.2f}:{currency}"
             if not ext_id:
                 ext_id = build_external_id(mapping_id, account_name, date, amount, currency, description)
 
