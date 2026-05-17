@@ -803,14 +803,18 @@ def csv_import_route():
     except ValueError:
         return jsonify({"error": "Field 'mapping' is not valid JSON"}), 400
 
-    from csv_import import parse_and_map
+    from csv_import import parse_and_map, resolve_account_iban
+    file_bytes = file.read()
     try:
-        transactions = parse_and_map(file.read(), mapping)
+        transactions = parse_and_map(file_bytes, mapping)
     except Exception as e:
         logger.exception("CSV parse error")
         return jsonify({"error": str(e)}), 400
 
-    account = {"name": mapping.get("account_name", "")}
+    iban = resolve_account_iban(file_bytes, mapping)
+    account_name = mapping.get("account_name") or mapping.get("name", "")
+    mapping_id = mapping.get("id", account_name or "csv")
+    account = {"id": mapping_id, "name": account_name, "iban": iban or ""}
     stats = _forward_to_targets(transactions, account)
     return jsonify({"status": "ok", "found": len(transactions), **stats})
 
@@ -1027,7 +1031,7 @@ def _forward_to_targets(transactions: list, account: dict) -> dict:
         elif target_name == "csv":
             path = target_config["path"]
             os.makedirs(path, exist_ok=True)
-            filename = f"{path}/{account['id']}.csv"
+            filename = f"{path}/{account.get('id', 'unknown')}.csv"
             with open(filename, "w", newline="") as f:
                 writer = csv_module.DictWriter(f, fieldnames=["date", "amount", "description", "iban"], extrasaction="ignore")
                 writer.writeheader()

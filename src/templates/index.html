@@ -972,12 +972,14 @@ function syncResultScreen(stats, error) {
   const found    = stats.found    ?? 0;
   const imported = stats.imported ?? found;
   const skipped  = stats.skipped  ?? 0;
+  const potentialDuplicates = stats.potential_duplicates ?? 0;
   const errors   = stats.errors   ?? 0;
   const reportUrl = stats.report_url || null;
   const rows = [
     `<tr><td>Found</td><td><strong>${found}</strong></td></tr>`,
     `<tr><td>Imported</td><td><strong>${imported}</strong></td></tr>`,
     skipped > 0 ? `<tr><td>Skipped (already in Firefly)</td><td><strong>${skipped}</strong></td></tr>` : "",
+    potentialDuplicates > 0 ? `<tr><td>Possible duplicates (AqBanking same date/amount)</td><td><strong style="color:var(--warning)">${potentialDuplicates}</strong></td></tr>` : "",
     errors  > 0 ? `<tr><td>Errors (rejected by Firefly)</td><td><strong style="color:var(--danger)">${errors}</strong></td></tr>` : "",
   ].filter(Boolean).join("");
   const reportLink = reportUrl
@@ -1933,15 +1935,22 @@ async function runCsvImport(mappingId) {
     const r = await fetch("/csv/import", { method: "POST", body: fd });
     const data = await r.json();
     if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
-    const imported = data.imported ?? data.found ?? 0;
-    const skipped  = data.skipped  ?? 0;
-    const errors   = data.errors   ?? 0;
+    const imported   = data.imported   ?? data.found ?? 0;
+    const skipped    = data.skipped    ?? 0;
+    const potDups    = data.potential_duplicates ?? 0;
+    const errors     = data.errors     ?? 0;
     const parts = [
       `${data.found ?? 0} found`,
       `${imported} imported`,
       skipped > 0 ? `${skipped} skipped (duplicates)` : "",
+      potDups > 0 ? `${potDups} possible duplicates (not imported)` : "",
       errors  > 0 ? `${errors} errors` : "",
     ].filter(Boolean).join(" · ");
+    const icon = errors > 0 ? "⚠️" : potDups > 0 ? "⚠️" : "✅";
+    const potDupNote = potDups > 0
+      ? `<p style="color:var(--warning);margin-top:8px"><strong>${potDups} transactions not imported</strong>: same date &amp; amount already exists from AqBanking sync. Check the import report.</p>` : "";
+    const reportLink = data.report_url
+      ? `<p><a href="${esc(data.report_url)}" target="_blank">Download import report</a></p>` : "";
     showModal(`
       <div class="modal-header">
         <div><div class="modal-title">Import complete</div></div>
@@ -1949,9 +1958,11 @@ async function runCsvImport(mappingId) {
       </div>
       <div class="modal-body">
         <div class="success-screen">
-          <div class="icon">${errors > 0 ? "⚠️" : "✅"}</div>
+          <div class="icon">${icon}</div>
           <h3>${imported} transaction${imported === 1 ? "" : "s"} imported</h3>
           <p>${parts}</p>
+          ${potDupNote}
+          ${reportLink}
         </div>
       </div>
       <div class="modal-footer">
@@ -2006,17 +2017,15 @@ function viewCsvProfile(mappingId) {
 async function openCsvAddDialog() {
   let available = [];
   try { available = await api("GET", "/csv/mappings/available"); } catch {}
-  const builtinCards = available.length ? available.map(p => `
-    <div class="csv-mapping-card" style="cursor:default">
-      <div class="card-body">
-        <div class="card-name">${esc(p.name)} <span class="csv-builtin-badge">built-in</span></div>
-        <div class="card-meta">delimiter: <code>${esc(p.delimiter || ",")}</code> &nbsp;·&nbsp; encoding: ${esc(p.encoding || "utf-8")}</div>
-      </div>
-      <div class="card-actions">
-        <button class="btn-primary btn-sm" onclick="pinBuiltinProfile(${esc(JSON.stringify(p.id))})">Add</button>
-      </div>
-    </div>`).join("") :
-    `<div style="color:var(--text-muted);font-size:13px;padding:8px 0">All available bank profiles are already in your list.</div>`;
+
+  const builtinSection = available.length ? `
+    <div style="display:flex;gap:8px;align-items:center">
+      <select id="csv-builtin-select" style="flex:1">
+        ${available.map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("")}
+      </select>
+      <button class="btn-primary btn-sm" onclick="pinSelectedBuiltin()">Add</button>
+    </div>` :
+    `<div style="color:var(--text-muted);font-size:13px">All available bank profiles are already in your list.</div>`;
 
   showModal(`
     <div class="modal-header">
@@ -2024,13 +2033,19 @@ async function openCsvAddDialog() {
       <button class="modal-close" onclick="closeModal()">✕</button>
     </div>
     <div class="modal-body">
-      <div style="font-weight:600;margin-bottom:8px">Pre-configured bank profiles</div>
-      ${builtinCards}
+      <div style="font-weight:600;margin-bottom:8px">Pre-configured bank profile</div>
+      ${builtinSection}
       <div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--border)">
         <div style="font-weight:600;margin-bottom:8px">Custom mapping</div>
         <button class="btn-secondary" onclick="closeModal();openCsvNewWizard()">Create from scratch →</button>
       </div>
     </div>`);
+}
+
+async function pinSelectedBuiltin() {
+  const sel = document.getElementById("csv-builtin-select");
+  if (!sel) return;
+  await pinBuiltinProfile(sel.value);
 }
 
 async function pinBuiltinProfile(profileId) {
