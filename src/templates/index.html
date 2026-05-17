@@ -1851,24 +1851,30 @@ function renderCsvMappings() {
       <div class="card-body">
         <div class="card-name">${esc(m.name)}${m.builtin ? '<span class="csv-builtin-badge">built-in</span>' : ""}</div>
         <div class="card-meta">
-          account: ${esc(m.account_name || "—")}
-          &nbsp;·&nbsp; delimiter: <code>${esc(m.delimiter || ",")}</code>
+          ${m.account_name ? `account: ${esc(m.account_name)} &nbsp;·&nbsp; ` : ""}delimiter: <code>${esc(m.delimiter || ",")}</code>
           &nbsp;·&nbsp; encoding: ${esc(m.encoding || "utf-8")}
         </div>
       </div>
       <div class="card-actions">
         <button class="btn-primary btn-sm" onclick="openCsvImportModal(${esc(JSON.stringify(m.id))})">Import CSV</button>
-        ${m.builtin ? "" : `<button class="btn-secondary btn-sm" onclick="openCsvEditWizard(${esc(JSON.stringify(m.id))})">Edit</button>`}
-        ${m.builtin ? "" : `<button class="btn-danger btn-sm" onclick="deleteCsvMapping(${esc(JSON.stringify(m.id))})">Delete</button>`}
+        ${m.builtin
+          ? `<button class="btn-secondary btn-sm" onclick="viewCsvProfile(${esc(JSON.stringify(m.id))})">View</button>
+             <button class="btn-danger btn-sm" onclick="removeCsvMapping(${esc(JSON.stringify(m.id))})">Remove</button>`
+          : `<button class="btn-secondary btn-sm" onclick="openCsvEditWizard(${esc(JSON.stringify(m.id))})">Edit</button>
+             <button class="btn-danger btn-sm" onclick="removeCsvMapping(${esc(JSON.stringify(m.id))})">Delete</button>`}
       </div>
     </div>`).join("");
 
+  const empty = `<div class="empty">
+    <p>No profiles added yet.</p>
+    <p>Click <strong>+ Add</strong> to choose a pre-configured bank profile or create a custom mapping.</p>
+  </div>`;
+
   el.innerHTML = `
     <div style="display:flex;justify-content:flex-end;margin-bottom:14px">
-      <button class="btn-primary" onclick="openCsvNewWizard()">+ New Mapping</button>
+      <button class="btn-primary" onclick="openCsvAddDialog()">+ Add</button>
     </div>
-    ${csvState.mappings.length ? cards : '<div class="empty"><p>No mappings yet.</p><p>Create a mapping to import transactions from a CSV file.</p></div>'}
-    <div style="margin-top:4px;font-size:12px;color:var(--text-muted)">Built-in profiles are pre-configured for common German banks and ready to use — just pick your CSV file.</div>`;
+    ${csvState.mappings.length ? cards : empty}`;
 }
 
 // ── Quick import: pick file and run against an existing mapping ────────────────
@@ -1957,10 +1963,80 @@ async function runCsvImport(mappingId) {
   }
 }
 
-async function deleteCsvMapping(mappingId) {
-  if (!confirm("Delete this mapping?")) return;
+async function removeCsvMapping(mappingId) {
+  const m = csvState.mappings.find(x => x.id === mappingId);
+  const label = m?.builtin ? "Remove this profile from your list?" : "Delete this mapping?";
+  if (!confirm(label)) return;
   try {
     await api("DELETE", `/csv/mappings/${encodeURIComponent(mappingId)}`);
+    await loadCsvMappings();
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+function viewCsvProfile(mappingId) {
+  const m = csvState.mappings.find(x => x.id === mappingId);
+  if (!m) return;
+  const fields = Object.entries(m.fields || {}).map(([k, v]) => {
+    const src = v.column ? `column: ${v.column}` : v.columns ? `columns: ${v.columns.join(", ")}` : v.value !== undefined ? `fixed: ${v.value}` : "—";
+    return `<tr><td style="padding:4px 10px 4px 0;font-weight:500">${esc(k)}</td><td style="padding:4px 0;color:var(--text-muted)">${esc(src)}</td></tr>`;
+  }).join("");
+  const strategy = m.external_id_strategy ? `<div style="margin-top:12px;font-size:12px;color:var(--text-muted)">external_id: ${esc(m.external_id_strategy.type)}</div>` : "";
+  showModal(`
+    <div class="modal-header">
+      <div><div class="modal-title">${esc(m.name)}</div>
+        <div class="modal-subtitle">Built-in profile — read only</div></div>
+      <button class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <table style="width:100%;font-size:13px">${fields}</table>
+      ${strategy}
+      <div style="margin-top:10px;font-size:12px;color:var(--text-muted)">
+        delimiter: <code>${esc(m.delimiter || ",")}</code> &nbsp;·&nbsp;
+        encoding: ${esc(m.encoding || "utf-8")} &nbsp;·&nbsp;
+        skip rows: ${m.skip_rows ?? 0}
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-primary" onclick="closeModal()">Close</button>
+    </div>`);
+}
+
+async function openCsvAddDialog() {
+  let available = [];
+  try { available = await api("GET", "/csv/mappings/available"); } catch {}
+  const builtinCards = available.length ? available.map(p => `
+    <div class="csv-mapping-card" style="cursor:default">
+      <div class="card-body">
+        <div class="card-name">${esc(p.name)} <span class="csv-builtin-badge">built-in</span></div>
+        <div class="card-meta">delimiter: <code>${esc(p.delimiter || ",")}</code> &nbsp;·&nbsp; encoding: ${esc(p.encoding || "utf-8")}</div>
+      </div>
+      <div class="card-actions">
+        <button class="btn-primary btn-sm" onclick="pinBuiltinProfile(${esc(JSON.stringify(p.id))})">Add</button>
+      </div>
+    </div>`).join("") :
+    `<div style="color:var(--text-muted);font-size:13px;padding:8px 0">All available bank profiles are already in your list.</div>`;
+
+  showModal(`
+    <div class="modal-header">
+      <div><div class="modal-title">Add Profile</div></div>
+      <button class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div style="font-weight:600;margin-bottom:8px">Pre-configured bank profiles</div>
+      ${builtinCards}
+      <div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--border)">
+        <div style="font-weight:600;margin-bottom:8px">Custom mapping</div>
+        <button class="btn-secondary" onclick="closeModal();openCsvNewWizard()">Create from scratch →</button>
+      </div>
+    </div>`);
+}
+
+async function pinBuiltinProfile(profileId) {
+  try {
+    await api("POST", "/csv/mappings/pin", { id: profileId });
+    closeModal();
     await loadCsvMappings();
   } catch (e) {
     alert(e.message);

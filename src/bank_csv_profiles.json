@@ -4,7 +4,7 @@
     "name": "1822direkt",
     "builtin": true,
     "delimiter": ";",
-    "encoding": "utf-8",
+    "encoding": "cp1252",
     "skip_rows": 0,
     "join_multiline": false,
     "fields": {
@@ -48,7 +48,7 @@
     },
     "external_id_strategy": {
       "type": "txporter_iban",
-      "blz": "50050222",
+      "blz": "50050201",
       "kontonummer_column": "Kontonummer"
     }
   }
