@@ -260,18 +260,20 @@ class FireflyClient:
 
         Takes the earliest transaction date in the batch and subtracts buffer_days
         to catch transactions that the bank may report with a slightly earlier date
-        than the requested sync window.
+        than the requested sync window. Accepts both YYYYMMDD and YYYY-MM-DD formats.
         """
         dates = [tx["date"] for tx in transactions if tx.get("date")]
         if not dates:
             return None
-        min_date = min(dates)  # YYYYMMDD
-        try:
-            dt = datetime.strptime(min_date, "%Y%m%d") - timedelta(days=buffer_days)
-            return dt.strftime("%Y-%m-%d")
-        except ValueError:
-            logger.warning("Could not parse transaction date '%s', fetching all external_ids", min_date)
-            return None
+        min_date = min(dates)
+        for fmt in ("%Y%m%d", "%Y-%m-%d"):
+            try:
+                dt = datetime.strptime(min_date, fmt) - timedelta(days=buffer_days)
+                return dt.strftime("%Y-%m-%d")
+            except ValueError:
+                continue
+        logger.warning("Could not parse transaction date '%s', fetching all external_ids", min_date)
+        return None
 
     def _fetch_existing_data(self, firefly_account_id: str | None,
                               start_date: str | None = None) -> tuple[set, set]:
