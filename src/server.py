@@ -803,19 +803,23 @@ def csv_import_route():
     except ValueError:
         return jsonify({"error": "Field 'mapping' is not valid JSON"}), 400
 
-    from csv_import import parse_and_map, resolve_account_iban
-    file_bytes = file.read()
     try:
+        from csv_import import parse_and_map, resolve_account_iban
+        file_bytes = file.read()
         transactions = parse_and_map(file_bytes, mapping)
     except Exception as e:
         logger.exception("CSV parse error")
         return jsonify({"error": str(e)}), 400
 
-    iban = resolve_account_iban(file_bytes, mapping)
-    account_name = mapping.get("account_name") or mapping.get("name", "")
-    mapping_id = mapping.get("id", account_name or "csv")
-    account = {"id": mapping_id, "name": account_name, "iban": iban or ""}
-    stats = _forward_to_targets(transactions, account)
+    try:
+        iban = resolve_account_iban(file_bytes, mapping)
+        account_name = mapping.get("account_name") or mapping.get("name", "")
+        mapping_id = mapping.get("id", account_name or "csv")
+        account = {"id": mapping_id, "name": account_name, "iban": iban or ""}
+        stats = _forward_to_targets(transactions, account)
+    except Exception as e:
+        logger.exception("CSV import error")
+        return jsonify({"error": str(e)}), 500
     return jsonify({"status": "ok", "found": len(transactions), **stats})
 
 
