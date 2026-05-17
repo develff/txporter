@@ -6,10 +6,10 @@ import os
 import pytest
 from unittest.mock import patch, MagicMock
 
+from external_id import build_external_id
 from src.csv_import import (
     preview_csv,
     parse_and_map,
-    build_external_id,
     load_mappings,
     load_builtin_profiles,
     save_mappings,
@@ -17,6 +17,7 @@ from src.csv_import import (
     _parse_amount,
     _resolve,
     _iban_from_blz,
+    _iban_from_header,
 )
 
 # ── Fixtures ───────────────────────────────────────────────────────────────────
@@ -126,30 +127,59 @@ class TestResolve:
 # ── build_external_id ──────────────────────────────────────────────────────────
 
 class TestBuildExternalId:
-    def test_format(self):
-        ext_id = build_external_id("crypto-com-visa", "Crypto.com Visa",
-                                   "2024-01-15", -42.50, "EUR", "Supermarkt Berlin")
+    def test_format_with_desc_hash(self):
+        ext_id = build_external_id("crypto-com-visa:Crypto.com Visa", "20240115", -42.50, "EUR",
+                                   description="Supermarkt Berlin")
         parts = ext_id.split(":")
         assert parts[0] == "txporter"
         assert parts[1] == "crypto-com-visa"
         assert parts[2] == "Crypto.com Visa"
-        assert parts[3] == "2024-01-15"
+        assert parts[3] == "20240115"
         assert parts[4] == "-42.50"
         assert parts[5] == "EUR"
-        assert len(parts[6]) == 8          # 8-char hex hash
+        assert len(parts[6]) == 8
+
+    def test_end_to_end_ref_used_when_real(self):
+        ext_id = build_external_id("DE12345678901234567890", "20240115", -42.50, "EUR",
+                                   end_to_end_ref="AB12345678")
+        assert ext_id.endswith(":AB12345678")
+
+    def test_notprovided_falls_to_fingerprint(self):
+        a = build_external_id("DE12345678901234567890", "20240115", -42.50, "EUR",
+                              end_to_end_ref="NOTPROVIDED",
+                              remote_iban="DE99123456780000001234", remote_name="Shop GmbH",
+                              description="Supermarkt")
+        b = build_external_id("DE12345678901234567890", "20240115", -42.50, "EUR",
+                              remote_iban="DE99123456780000001234", remote_name="Shop GmbH",
+                              description="Supermarkt")
+        assert a == b
+        assert len(a.split(":")[-1]) == 8
+
+    def test_no_ref_uses_fingerprint(self):
+        ext_id = build_external_id("DE12345678901234567890", "20240115", -42.50, "EUR",
+                                   remote_iban="DE99123456780000001234",
+                                   remote_name="Shop GmbH", description="Supermarkt")
+        assert len(ext_id.split(":")[-1]) == 8
+
+    def test_fingerprint_differs_by_remote_iban(self):
+        a = build_external_id("m:acc", "20240101", -10.0, "EUR",
+                              remote_iban="DE11111111111111111111", description="Shop")
+        b = build_external_id("m:acc", "20240101", -10.0, "EUR",
+                              remote_iban="DE22222222222222222222", description="Shop")
+        assert a != b
 
     def test_stable(self):
-        a = build_external_id("m", "acc", "2024-01-01", -10.0, "EUR", "Shop")
-        b = build_external_id("m", "acc", "2024-01-01", -10.0, "EUR", "Shop")
+        a = build_external_id("m:acc", "20240101", -10.0, "EUR", description="Shop")
+        b = build_external_id("m:acc", "20240101", -10.0, "EUR", description="Shop")
         assert a == b
 
     def test_different_descriptions_produce_different_ids(self):
-        a = build_external_id("m", "acc", "2024-01-01", -10.0, "EUR", "Shop A")
-        b = build_external_id("m", "acc", "2024-01-01", -10.0, "EUR", "Shop B")
+        a = build_external_id("m:acc", "20240101", -10.0, "EUR", description="Shop A")
+        b = build_external_id("m:acc", "20240101", -10.0, "EUR", description="Shop B")
         assert a != b
 
     def test_prefix(self):
-        ext_id = build_external_id("m", "acc", "2024-01-01", -5.0, "EUR", "x")
+        ext_id = build_external_id("m:acc", "20240101", -5.0, "EUR", description="x")
         assert ext_id.startswith("txporter:")
 
 
@@ -397,7 +427,7 @@ class TestParseAndMap:
 
     def test_external_id_generated(self):
         txs = parse_and_map(SAMPLE_CSV.encode(), CRYPTO_COM_MAPPING)
-        assert txs[0]["external_id"].startswith("txporter:crypto-com-visa:")
+        assert txs[0]["external_id"].startswith("txporter:crypto-com-visa:Crypto.com Visa:")
 
     def test_external_id_stable(self):
         txs_a = parse_and_map(SAMPLE_CSV.encode(), CRYPTO_COM_MAPPING)
@@ -727,9 +757,9 @@ class TestFireflyNewFields:
 # ── _iban_from_blz ─────────────────────────────────────────────────────────────
 
 class TestIbanFromBlz:
-    def test_known_1822direkt_account(self):
-        iban = _iban_from_blz("50050222", "0123456789")
-        assert iban == "DE94500502220123456789"
+    def test_known_account(self):
+        iban = _iban_from_blz("50050201", "0123456789")
+        assert iban == "DE38500502010123456789"
 
     def test_leading_zeros_stripped_then_padded(self):
         assert _iban_from_blz("50050222", "0000000001") == _iban_from_blz("50050222", "1")
@@ -778,42 +808,61 @@ class TestBuiltinProfiles:
         p = next(p for p in profiles if p["id"] == "1822direkt")
         assert p.get("builtin") is True
 
-    def test_builtin_profiles_included_in_load_mappings(self, tmp_path):
+    def test_load_mappings_empty_without_pins(self, tmp_path):
         user_path = str(tmp_path / "csv_mappings.json")
         with patch("src.csv_import.MAPPINGS_PATH", user_path):
-            mappings = load_mappings()
-        ids = [m["id"] for m in mappings]
-        assert "1822direkt" in ids
+            assert load_mappings() == []
 
-    def test_builtin_not_duplicated_when_user_has_same_id(self, tmp_path):
+    def test_pinned_builtin_resolved_in_load_mappings(self, tmp_path):
         user_path = str(tmp_path / "csv_mappings.json")
         with open(user_path, "w") as f:
-            json.dump([{"id": "1822direkt", "name": "User copy"}], f)
+            json.dump([{"id": "1822direkt", "pinned": True}], f)
         with patch("src.csv_import.MAPPINGS_PATH", user_path):
             mappings = load_mappings()
-        assert sum(1 for m in mappings if m["id"] == "1822direkt") == 1
-        assert next(m for m in mappings if m["id"] == "1822direkt").get("builtin") is True
+        assert len(mappings) == 1
+        assert mappings[0]["id"] == "1822direkt"
+        assert mappings[0].get("builtin") is True
 
-    def test_save_mappings_does_not_persist_builtins(self, tmp_path):
+    def test_save_mappings_stores_builtin_as_pin_stub(self, tmp_path):
         user_path = str(tmp_path / "csv_mappings.json")
+        builtin = next(p for p in load_builtin_profiles() if p["id"] == "1822direkt")
         with patch("src.csv_import.MAPPINGS_PATH", user_path):
-            save_mappings([{"id": "1822direkt", "name": "ignored"}, {"id": "user", "name": "kept"}])
+            save_mappings([builtin, {"id": "user", "name": "kept"}])
             with open(user_path) as f:
                 saved = json.load(f)
-        ids = [m["id"] for m in saved]
-        assert "1822direkt" not in ids
-        assert "user" in ids
+        direkt = next(m for m in saved if m["id"] == "1822direkt")
+        assert direkt == {"id": "1822direkt", "pinned": True}
+        assert any(m["id"] == "user" for m in saved)
 
-    def test_builtin_delete_returns_409(self, tmp_path):
+    def test_pin_builtin_via_server(self, tmp_path):
         import src.server as server_mod
         import src.csv_import as csv_mod
         orig = csv_mod.MAPPINGS_PATH
         csv_mod.MAPPINGS_PATH = str(tmp_path / "csv_mappings.json")
         try:
+            resp = server_mod.app.test_client().post(
+                "/csv/mappings/pin",
+                data=json.dumps({"id": "1822direkt"}),
+                content_type="application/json",
+            )
+        finally:
+            csv_mod.MAPPINGS_PATH = orig
+        assert resp.status_code == 200
+        assert resp.get_json()["id"] == "1822direkt"
+
+    def test_pinned_builtin_removable_via_delete(self, tmp_path):
+        import src.server as server_mod
+        import src.csv_import as csv_mod
+        orig = csv_mod.MAPPINGS_PATH
+        path = str(tmp_path / "csv_mappings.json")
+        with open(path, "w") as f:
+            json.dump([{"id": "1822direkt", "pinned": True}], f)
+        csv_mod.MAPPINGS_PATH = path
+        try:
             resp = server_mod.app.test_client().delete("/csv/mappings/1822direkt")
         finally:
             csv_mod.MAPPINGS_PATH = orig
-        assert resp.status_code == 409
+        assert resp.status_code == 200
 
     def test_builtin_save_returns_409(self, tmp_path):
         import src.server as server_mod
@@ -898,12 +947,12 @@ class Test1822BankExportFormat:
     def test_external_id_iban_format(self):
         txs = parse_and_map(self._fixture_bytes(), _1822DIREKT_BANK_PROFILE)
         salary = next(t for t in txs if t["amount_eur"] > 0)
-        assert salary["external_id"] == "txporter:DE94500502220123456789:20260227:6409.00:EUR"
+        assert salary["external_id"] == "txporter:DE38500502010123456789:20260227:6409.00:EUR:41d8bc4f"
 
     def test_external_id_debit_format(self):
         txs = parse_and_map(self._fixture_bytes(), _1822DIREKT_BANK_PROFILE)
         card = next(t for t in txs if t["amount_eur"] == pytest.approx(-8.0))
-        assert card["external_id"] == "txporter:DE94500502220123456789:20260226:-8.00:EUR"
+        assert card["external_id"] == "txporter:DE38500502010123456789:20260226:-8.00:EUR:4e72d170"
 
     def test_external_id_matches_aqbanking_format(self):
         txs = parse_and_map(self._fixture_bytes(), _1822DIREKT_BANK_PROFILE)
@@ -912,3 +961,76 @@ class Test1822BankExportFormat:
             assert parts[0] == "txporter"
             assert parts[1].startswith("DE")  # IBAN
             assert len(parts[2]) == 8 and parts[2].isdigit()  # YYYYMMDD
+
+
+# ── _iban_from_header ──────────────────────────────────────────────────────────
+
+_DKB_FIXTURE_BYTES = open(
+    os.path.join(os.path.dirname(__file__), "fixtures", "dkb_sample.csv"), "rb"
+).read()
+
+_DKB_BUILTIN_PROFILE = next(
+    p for p in load_builtin_profiles() if p["id"] == "dkb-girokonto"
+)
+
+
+class TestIbanFromHeader:
+    def test_extracts_iban_from_dkb_header(self):
+        iban = _iban_from_header(_DKB_FIXTURE_BYTES, "utf-8", ";", 0, 1)
+        assert iban == "DE89370400440532013000"
+
+    def test_missing_row_returns_none(self):
+        data = b"A;B\nC;D\n"
+        assert _iban_from_header(data, "utf-8", ";", 5, 1) is None
+
+    def test_missing_col_returns_none(self):
+        data = b"OnlyOneCol\n"
+        assert _iban_from_header(data, "utf-8", ";", 0, 1) is None
+
+
+# ── DKB Girokonto built-in profile ────────────────────────────────────────────
+
+class TestDKBBuiltinProfile:
+    def test_profile_present_and_builtin(self):
+        assert _DKB_BUILTIN_PROFILE.get("builtin") is True
+
+    def test_parse_all_rows(self):
+        txs = parse_and_map(_DKB_FIXTURE_BYTES, _DKB_BUILTIN_PROFILE)
+        assert len(txs) == 5
+
+    def test_date_parsed(self):
+        txs = parse_and_map(_DKB_FIXTURE_BYTES, _DKB_BUILTIN_PROFILE)
+        assert txs[0]["date"] == "2026-04-17"
+
+    def test_amount_parsed(self):
+        txs = parse_and_map(_DKB_FIXTURE_BYTES, _DKB_BUILTIN_PROFILE)
+        assert txs[0]["amount_eur"] == pytest.approx(-41.70)
+
+    def test_currency_eur(self):
+        txs = parse_and_map(_DKB_FIXTURE_BYTES, _DKB_BUILTIN_PROFILE)
+        assert all(t["currency_code"] == "EUR" for t in txs)
+
+    def test_description_mapped(self):
+        txs = parse_and_map(_DKB_FIXTURE_BYTES, _DKB_BUILTIN_PROFILE)
+        assert "VISA" in txs[0]["description"]
+
+    def test_remote_name_mapped(self):
+        txs = parse_and_map(_DKB_FIXTURE_BYTES, _DKB_BUILTIN_PROFILE)
+        assert txs[0].get("remote_name") == "Rewe Hamburg Mitte - Curve"
+
+    def test_remote_iban_mapped(self):
+        txs = parse_and_map(_DKB_FIXTURE_BYTES, _DKB_BUILTIN_PROFILE)
+        assert txs[0].get("remote_iban") == "DE75512108001245126199"
+
+    def test_external_id_uses_header_iban(self):
+        txs = parse_and_map(_DKB_FIXTURE_BYTES, _DKB_BUILTIN_PROFILE)
+        # Kundenreferenz "466106571503124" is real (not NOTPROVIDED) → used directly
+        assert txs[0]["external_id"] == "txporter:DE89370400440532013000:20260417:-41.70:EUR:466106571503124"
+
+    def test_external_id_matches_aqbanking_format(self):
+        txs = parse_and_map(_DKB_FIXTURE_BYTES, _DKB_BUILTIN_PROFILE)
+        for tx in txs:
+            parts = tx["external_id"].split(":")
+            assert parts[0] == "txporter"
+            assert parts[1].startswith("DE")
+            assert len(parts[2]) == 8 and parts[2].isdigit()

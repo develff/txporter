@@ -112,18 +112,19 @@ class FireflyClient:
         rows = []
 
         if not transactions:
-            return {"found": 0, "imported": 0, "skipped": 0, "errors": 0, "rows": []}
+            return {"found": 0, "imported": 0, "skipped": 0, "potential_duplicates": 0, "errors": 0, "rows": []}
 
         currency = transactions[0].get("currency_code", "EUR")
         account_name = account.get("name", "")
         firefly_account_id = self._ensure_asset_account(account_name, currency, account)
         start_date = self._dedup_start_date(transactions)
-        existing_ids = self._fetch_existing_external_ids(firefly_account_id, start_date)
+        existing_ids, aq_date_amounts = self._fetch_existing_data(firefly_account_id, start_date)
         logger.info(
-            "Firefly account '%s': %d existing external_ids loaded (since %s)",
-            account_name, len(existing_ids), start_date or "all time",
+            "Firefly account '%s': %d existing external_ids, %d aq date/amount pairs (since %s)",
+            account_name, len(existing_ids), len(aq_date_amounts), start_date or "all time",
         )
 
+        potential_duplicates = 0
         for tx in transactions:
             if not tx.get("description"):
                 tx["description"] = _build_description(tx) or "(kein Verwendungszweck)"
@@ -132,6 +133,15 @@ class FireflyClient:
                 logger.debug("Skipping duplicate external_id=%s", ext_id)
                 skipped += 1
                 rows.append({**tx, "firefly_status": "skipped"})
+                continue
+            # Secondary check: same date + same absolute amount already imported via txporter
+            tx_date = _iso_date(tx.get("date", ""))[:10]
+            tx_amt = f"{abs(tx.get('amount_eur', 0)):.2f}"
+            if aq_date_amounts and (tx_date, tx_amt) in aq_date_amounts:
+                logger.info("Potential duplicate (date+amount match): %s %s %s",
+                            tx_date, tx_amt, ext_id)
+                potential_duplicates += 1
+                rows.append({**tx, "firefly_status": "potential_duplicate"})
                 continue
             result = self._create_transaction(tx, account, firefly_account_id)
             if result is True:
@@ -150,10 +160,11 @@ class FireflyClient:
                 rows.append({**tx, "firefly_status": "error"})
 
         logger.info(
-            "Import complete: %d found, %d imported, %d skipped, %d errors",
-            found, imported, skipped, errors,
+            "Import complete: %d found, %d imported, %d skipped, %d potential duplicates, %d errors",
+            found, imported, skipped, potential_duplicates, errors,
         )
-        return {"found": found, "imported": imported, "skipped": skipped, "errors": errors, "rows": rows}
+        return {"found": found, "imported": imported, "skipped": skipped,
+                "potential_duplicates": potential_duplicates, "errors": errors, "rows": rows}
 
     def _ensure_asset_account(self, name: str, currency_code: str, account: dict) -> str | None:
         """Find or create the matching asset account in Firefly III.
@@ -250,20 +261,26 @@ class FireflyClient:
             logger.warning("Could not parse transaction date '%s', fetching all external_ids", min_date)
             return None
 
-    def _fetch_existing_external_ids(self, firefly_account_id: str | None,
-                                     start_date: str | None = None) -> set:
-        """Fetch external_ids of all existing transactions globally.
+    def _fetch_existing_data(self, firefly_account_id: str | None,
+                              start_date: str | None = None) -> tuple[set, set]:
+        """Fetch external_ids and (date, abs_amount) pairs of existing transactions.
 
         Uses the global transactions endpoint so that transactions Firefly reclassifies
-        to a different account (e.g. deposit routed to PayPal-Transit instead of the
-        source asset account) are still found and deduplicated.
+        to a different account are still found and deduplicated.
+
+        Returns:
+          external_ids — set of all existing external_id strings
+          aq_date_amounts — set of (YYYY-MM-DD, abs_amount_str) for transactions
+                            that were imported via txporter (external_id starts with
+                            'txporter:'). Used as a secondary duplicate signal.
 
         start_date (YYYY-MM-DD): if provided, only transactions on or after this date
         are queried — sufficient for dedup within a bounded sync window.
         """
         if firefly_account_id is None:
-            return set()
+            return set(), set()
         external_ids = set()
+        aq_date_amounts = set()
         page = 1
         params_base = {"limit": 100}
         if start_date:
@@ -284,14 +301,27 @@ class FireflyClient:
                 break
             for row in rows:
                 for split in row.get("attributes", {}).get("transactions", []):
-                    ext_id = split.get("external_id", "")
-                    if ext_id:
-                        external_ids.add(ext_id)
+                    self._collect_split_data(split, external_ids, aq_date_amounts)
             pagination = data.get("meta", {}).get("pagination", {})
             if page >= pagination.get("total_pages", 1):
                 break
             page += 1
-        return external_ids
+        return external_ids, aq_date_amounts
+
+    @staticmethod
+    def _collect_split_data(split: dict, external_ids: set, aq_date_amounts: set) -> None:
+        ext_id = split.get("external_id", "")
+        if ext_id:
+            external_ids.add(ext_id)
+        if not ext_id.startswith("txporter:"):
+            return
+        date = (split.get("date") or "")[:10]
+        try:
+            amt = f"{abs(float(split.get('amount', 0))):.2f}"
+        except (ValueError, TypeError):
+            amt = ""
+        if date and amt:
+            aq_date_amounts.add((date, amt))
 
     @staticmethod
     def _build_account_routing(is_withdrawal: bool, account_name: str,

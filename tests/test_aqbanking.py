@@ -1,8 +1,10 @@
 """Tests for aqbanking CTX parser."""
 
+import hashlib
 import pytest
 from pathlib import Path
-from src.aqbanking import _decode_amount_eur, _external_id, _parse_ctx
+from external_id import build_external_id
+from src.aqbanking import _decode_amount_eur, _parse_ctx
 
 FIXTURE = Path(__file__).parent / "fixtures" / "dkb_sample.ctx"
 
@@ -30,37 +32,42 @@ class TestDecodeAmountEur:
 
 
 class TestExternalId:
-    def test_with_both_ref_and_primanota(self):
-        eid = _external_id("1000000088", "20250401", -37.76, "EUR", "REF-0001", "7000")
-        assert eid == "txporter:1000000088:20250401:-37.76:EUR:REF-0001:7000"
-
-    def test_with_ref_only(self):
-        eid = _external_id("1000000088", "20250401", -37.76, "EUR", "REF-0001", "")
+    def test_with_end_to_end_ref(self):
+        eid = build_external_id("1000000088", "20250401", -37.76, "EUR", end_to_end_ref="REF-0001")
         assert eid == "txporter:1000000088:20250401:-37.76:EUR:REF-0001"
 
-    def test_with_primanota_only(self):
-        eid = _external_id("1000000088", "20250401", -37.76, "EUR", "", "7000")
-        assert eid == "txporter:1000000088:20250401:-37.76:EUR:7000"
+    def test_notprovided_falls_to_fingerprint(self):
+        eid = build_external_id("1000000088", "20250401", -37.76, "EUR",
+                                end_to_end_ref="NOTPROVIDED",
+                                remote_iban="DE00100000000000000001",
+                                remote_name="Shop GmbH", description="Zweck")
+        expected = "txporter:1000000088:20250401:-37.76:EUR:" + \
+                   hashlib.sha256(b"DE00100000000000000001|Shop GmbH|Zweck").hexdigest()[:8]
+        assert eid == expected
 
-    def test_primanota_zero_excluded(self):
-        eid = _external_id("1000000088", "20250401", -37.76, "EUR", "REF-0001", "0")
-        assert eid == "txporter:1000000088:20250401:-37.76:EUR:REF-0001"
+    def test_no_ref_uses_fingerprint(self):
+        eid = build_external_id("1000000088", "20250401", -37.76, "EUR",
+                                remote_iban="DE00100000000000000001",
+                                remote_name="Shop GmbH", description="Zweck")
+        expected = "txporter:1000000088:20250401:-37.76:EUR:" + \
+                   hashlib.sha256(b"DE00100000000000000001|Shop GmbH|Zweck").hexdigest()[:8]
+        assert eid == expected
 
-    def test_stable(self):
-        args = ("1000000088", "20250401", -37.76, "EUR", "REF-0001", "7000")
-        assert _external_id(*args) == _external_id(*args)
-
-    def test_different_input_different_id(self):
-        a = _external_id("1000000088", "20250401", -37.76, "EUR", "REF-0001", "7000")
-        b = _external_id("1000000088", "20250402", -37.76, "EUR", "REF-0002", "7000")
+    def test_fingerprint_differs_by_remote_iban(self):
+        a = build_external_id("1000000088", "20250401", -37.76, "EUR",
+                              remote_iban="DE11111111111111111111", description="Zweck")
+        b = build_external_id("1000000088", "20250401", -37.76, "EUR",
+                              remote_iban="DE22222222222222222222", description="Zweck")
         assert a != b
 
-    def test_no_ref_no_primanota_warns(self, caplog):
-        import logging
-        with caplog.at_level(logging.WARNING, logger="src.aqbanking"):
-            eid = _external_id("1000000088", "20250401", -37.76, "EUR", "", "")
-        assert "txporter:1000000088:20250401:-37.76:EUR" == eid
-        assert "may not be unique" in caplog.text
+    def test_stable(self):
+        eid = build_external_id("1000000088", "20250401", -37.76, "EUR", end_to_end_ref="REF-0001")
+        assert eid == build_external_id("1000000088", "20250401", -37.76, "EUR", end_to_end_ref="REF-0001")
+
+    def test_different_input_different_id(self):
+        a = build_external_id("1000000088", "20250401", -37.76, "EUR", end_to_end_ref="REF-0001")
+        b = build_external_id("1000000088", "20250402", -37.76, "EUR", end_to_end_ref="REF-0002")
+        assert a != b
 
 
 class TestParseCtx:
@@ -89,7 +96,8 @@ class TestParseCtx:
 
     def test_first_transaction_external_id(self, transactions):
         tx = transactions[0]
-        assert tx["external_id"] == "txporter:1000000088:20250401:-20.00:EUR:REF-0001:7000"
+        # tx[0] has no endToEndReference → fingerprint(remote_iban|remote_name|purpose)
+        assert tx["external_id"] == "txporter:DE06120300001000000088:20250401:-20.00:EUR:dc6dc59a"
 
     def test_fraction_amount(self, transactions):
         # Transaction 2: value="-25/10:EUR" → -€2.50

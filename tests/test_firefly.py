@@ -277,13 +277,13 @@ class TestDedupStartDate:
         assert result == "2025-12-25"  # 20260101 - 7 days
 
     def test_fetch_uses_start_date_param(self):
-        """_fetch_existing_external_ids passes start_date to the Firefly API."""
+        """_fetch_existing_data passes start_date to the Firefly API."""
         client = FireflyClient(CONFIG)
         mock_resp = MagicMock()
         mock_resp.ok = True
         mock_resp.json.return_value = {"data": [], "meta": {"pagination": {"total_pages": 1}}}
         with patch("src.firefly.requests.get", return_value=mock_resp) as mock_get:
-            client._fetch_existing_external_ids("42", start_date="2026-02-08")
+            client._fetch_existing_data("42", start_date="2026-02-08")
         call_params = mock_get.call_args.kwargs["params"]
         assert call_params["start"] == "2026-02-08"
 
@@ -293,7 +293,7 @@ class TestDedupStartDate:
         mock_resp.ok = True
         mock_resp.json.return_value = {"data": [], "meta": {"pagination": {"total_pages": 1}}}
         with patch("src.firefly.requests.get", return_value=mock_resp) as mock_get:
-            client._fetch_existing_external_ids("42")
+            client._fetch_existing_data("42")
         call_params = mock_get.call_args.kwargs["params"]
         assert "start" not in call_params
 
@@ -305,7 +305,7 @@ class TestDedupStartDate:
         mock_resp.ok = True
         mock_resp.json.return_value = {"data": [], "meta": {"pagination": {"total_pages": 1}}}
         with patch("src.firefly.requests.get", return_value=mock_resp) as mock_get:
-            client._fetch_existing_external_ids("42", start_date="2026-04-13")
+            client._fetch_existing_data("42", start_date="2026-04-13")
         url = mock_get.call_args.args[0]
         assert url.endswith("/api/v1/transactions")
         assert "/accounts/" not in url
@@ -435,18 +435,21 @@ class TestDedupStartDateValueError:
 
 
 class TestFetchExistingExternalIds:
-    def test_returns_empty_set_when_account_id_is_none(self):
+    def test_returns_empty_sets_when_account_id_is_none(self):
         client = FireflyClient(CONFIG)
-        assert client._fetch_existing_external_ids(None) == set()
+        ext_ids, aq_pairs = client._fetch_existing_data(None)
+        assert ext_ids == set()
+        assert aq_pairs == set()
 
-    def test_returns_empty_set_on_api_error(self):
+    def test_returns_empty_sets_on_api_error(self):
         client = FireflyClient(CONFIG)
         mock_resp = MagicMock()
         mock_resp.ok = False
         mock_resp.status_code = 500
         with patch("src.firefly.requests.get", return_value=mock_resp):
-            result = client._fetch_existing_external_ids("42")
-        assert result == set()
+            ext_ids, aq_pairs = client._fetch_existing_data("42")
+        assert ext_ids == set()
+        assert aq_pairs == set()
 
     def test_collects_external_ids_from_multiple_pages(self):
         client = FireflyClient(CONFIG)
@@ -467,8 +470,24 @@ class TestFetchExistingExternalIds:
             make_page(["id1", "id2"], 2),
             make_page(["id3"], 2),
         ]):
-            result = client._fetch_existing_external_ids("42")
-        assert result == {"id1", "id2", "id3"}
+            ext_ids, _ = client._fetch_existing_data("42")
+        assert ext_ids == {"id1", "id2", "id3"}
+
+    def test_indexes_txporter_date_amounts(self):
+        client = FireflyClient(CONFIG)
+        mock_resp = MagicMock()
+        mock_resp.ok = True
+        mock_resp.json.return_value = {
+            "data": [{"attributes": {"transactions": [
+                {"external_id": "txporter:DE123:20260401:-45.00:EUR:abc", "date": "2026-04-01", "amount": "45.00"},
+                {"external_id": "other-id", "date": "2026-04-01", "amount": "10.00"},
+            ]}}],
+            "meta": {"pagination": {"total_pages": 1}},
+        }
+        with patch("src.firefly.requests.get", return_value=mock_resp):
+            ext_ids, aq_pairs = client._fetch_existing_data("42")
+        assert ("2026-04-01", "45.00") in aq_pairs
+        assert ("2026-04-01", "10.00") not in aq_pairs  # not a txporter: tx
 
     def test_stops_when_data_is_empty(self):
         client = FireflyClient(CONFIG)
@@ -479,7 +498,7 @@ class TestFetchExistingExternalIds:
             "meta": {"pagination": {"total_pages": 5}},
         }
         with patch("src.firefly.requests.get", return_value=mock_resp) as mock_get:
-            client._fetch_existing_external_ids("42")
+            client._fetch_existing_data("42")
         assert mock_get.call_count == 1
 
 
@@ -491,13 +510,13 @@ class TestImportTransactions:
         return patch("src.firefly.FireflyClient._ensure_asset_account", return_value=account_id)
 
     def _mock_fetch(self, existing=None):
-        return patch("src.firefly.FireflyClient._fetch_existing_external_ids",
-                     return_value=set(existing or []))
+        return patch("src.firefly.FireflyClient._fetch_existing_data",
+                     return_value=(set(existing or []), set()))
 
     def test_empty_transactions_returns_zeros(self):
         client = self._client()
         result = client.import_transactions([], ACCOUNT)
-        assert result == {"found": 0, "imported": 0, "skipped": 0, "errors": 0, "rows": []}
+        assert result == {"found": 0, "imported": 0, "skipped": 0, "potential_duplicates": 0, "errors": 0, "rows": []}
 
     def test_imports_new_transaction(self):
         client = self._client()
@@ -550,7 +569,7 @@ class TestImportTransactions:
         client = self._client()
         tx = make_tx(date="20260420")
         with self._mock_ensure(), \
-             patch("src.firefly.FireflyClient._fetch_existing_external_ids", return_value=set()) as mock_fetch, \
+             patch("src.firefly.FireflyClient._fetch_existing_data", return_value=(set(), set())) as mock_fetch, \
              patch("src.firefly.FireflyClient._create_transaction", return_value=True):
             client.import_transactions([tx], ACCOUNT)
         _, kwargs = mock_fetch.call_args
