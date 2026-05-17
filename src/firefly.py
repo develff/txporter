@@ -5,6 +5,7 @@ Imports transactions into Firefly III via REST API.
 
 import requests
 import logging
+import time
 from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
@@ -119,12 +120,16 @@ class FireflyClient:
 
         currency = transactions[0].get("currency_code", "EUR")
         account_name = account.get("name", "")
+        t_start = time.monotonic()
+        t0 = t_start
         firefly_account_id = self._ensure_asset_account(account_name, currency, account)
+        logger.info("_ensure_asset_account took %.1fs", time.monotonic() - t0)
         start_date = self._dedup_start_date(transactions)
+        t0 = time.monotonic()
         existing_ids, aq_date_amounts = self._fetch_existing_data(firefly_account_id, start_date)
         logger.info(
-            "Firefly account '%s': %d existing external_ids, %d aq date/amount pairs (since %s)",
-            account_name, len(existing_ids), len(aq_date_amounts), start_date or "all time",
+            "_fetch_existing_data took %.1fs — account '%s': %d external_ids, %d aq pairs (since %s)",
+            time.monotonic() - t0, account_name, len(existing_ids), len(aq_date_amounts), start_date or "all time",
         )
 
         potential_duplicates = 0
@@ -166,6 +171,7 @@ class FireflyClient:
             "Import complete: %d found, %d imported, %d skipped, %d potential duplicates, %d errors",
             found, imported, skipped, potential_duplicates, errors,
         )
+        logger.info("Total import time: %.1fs", time.monotonic() - t_start)
         return {"found": found, "imported": imported, "skipped": skipped,
                 "potential_duplicates": potential_duplicates, "errors": errors, "rows": rows}
 
@@ -271,8 +277,8 @@ class FireflyClient:
                               start_date: str | None = None) -> tuple[set, set]:
         """Fetch external_ids and (date, abs_amount) pairs of existing transactions.
 
-        Uses the account-specific endpoint for performance — only fetches transactions
-        for the relevant asset account rather than all global transactions.
+        Uses the global transactions endpoint so that transactions Firefly reclassifies
+        to a different account (e.g. PayPal-Transit) are still found and deduplicated.
 
         Returns:
           external_ids — set of all existing external_id strings
@@ -293,14 +299,14 @@ class FireflyClient:
             params_base["start"] = start_date
         while True:
             response = requests.get(
-                f"{self.base_url}/api/v1/accounts/{firefly_account_id}/transactions",
+                f"{self.base_url}/api/v1/transactions",
                 headers=self.headers,
                 params={**params_base, "page": page},
                 timeout=self._TIMEOUT,
             )
             if not response.ok:
-                logger.warning("Could not fetch transactions for account %s (page %d): %s",
-                               firefly_account_id, page, response.status_code)
+                logger.warning("Could not fetch global transactions (page %d): %s",
+                               page, response.status_code)
                 break
             data = response.json()
             rows = data.get("data", [])
