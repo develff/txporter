@@ -33,5 +33,5 @@ EXPOSE 8090
 
 ENTRYPOINT ["/home/txporter/scripts/entrypoint.sh"]
 # workers=1: global state (_pending_syncs, _running_proc) must not be shared across workers.
-# timeout=300: bank syncs can take up to ~210 s (90 s drain + 120 s complete_fetch).
-CMD ["gunicorn", "--chdir", "src", "--bind", "0.0.0.0:8090", "--workers", "1", "--timeout", "300", "server:app"]
+# timeout=900: bank syncs take up to ~210 s; large CSV imports (3+ years) can take ~600 s.
+CMD ["gunicorn", "--chdir", "src", "--bind", "0.0.0.0:8090", "--workers", "1", "--timeout", "900", "server:app"]
