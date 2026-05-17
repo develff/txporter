@@ -772,6 +772,22 @@ class TestCsvEndpoints:
             )
         assert resp.status_code == 400
 
+    def test_csv_import_forward_error_returns_json_500(self, sync_client):
+        with patch("src.csv_import.parse_and_map", return_value=[]):
+            with patch("src.server._forward_to_targets", side_effect=RuntimeError("firefly down")):
+                resp = sync_client.post(
+                    "/csv/import",
+                    data={
+                        "file": (io.BytesIO(b"a,b\n1,2"), "test.csv"),
+                        "mapping": '{"id":"m","account_name":"Test"}',
+                    },
+                    content_type="multipart/form-data",
+                )
+        assert resp.status_code == 500
+        data = resp.get_json()
+        assert data is not None
+        assert "firefly down" in data["error"]
+
     def test_csv_fields_returns_list(self, sync_client):
         resp = sync_client.get("/csv/fields")
         assert resp.status_code == 200
