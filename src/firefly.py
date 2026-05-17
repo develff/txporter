@@ -271,8 +271,8 @@ class FireflyClient:
                               start_date: str | None = None) -> tuple[set, set]:
         """Fetch external_ids and (date, abs_amount) pairs of existing transactions.
 
-        Uses the global transactions endpoint so that transactions Firefly reclassifies
-        to a different account are still found and deduplicated.
+        Uses the account-specific endpoint for performance — only fetches transactions
+        for the relevant asset account rather than all global transactions.
 
         Returns:
           external_ids — set of all existing external_id strings
@@ -293,14 +293,14 @@ class FireflyClient:
             params_base["start"] = start_date
         while True:
             response = requests.get(
-                f"{self.base_url}/api/v1/transactions",
+                f"{self.base_url}/api/v1/accounts/{firefly_account_id}/transactions",
                 headers=self.headers,
                 params={**params_base, "page": page},
                 timeout=self._TIMEOUT,
             )
             if not response.ok:
-                logger.warning("Could not fetch global transactions (page %d): %s",
-                               page, response.status_code)
+                logger.warning("Could not fetch transactions for account %s (page %d): %s",
+                               firefly_account_id, page, response.status_code)
                 break
             data = response.json()
             rows = data.get("data", [])

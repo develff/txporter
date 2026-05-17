@@ -297,9 +297,8 @@ class TestDedupStartDate:
         call_params = mock_get.call_args.kwargs["params"]
         assert "start" not in call_params
 
-    def test_fetch_uses_global_transactions_endpoint(self):
-        """Global /api/v1/transactions endpoint is used so transactions reclassified
-        to a different account (e.g. PayPal-Transit) are still found."""
+    def test_fetch_uses_account_specific_endpoint(self):
+        """Account-specific endpoint is used for performance — avoids fetching all global transactions."""
         client = FireflyClient(CONFIG)
         mock_resp = MagicMock()
         mock_resp.ok = True
@@ -307,8 +306,7 @@ class TestDedupStartDate:
         with patch("src.firefly.requests.get", return_value=mock_resp) as mock_get:
             client._fetch_existing_data("42", start_date="2026-04-13")
         url = mock_get.call_args.args[0]
-        assert url.endswith("/api/v1/transactions")
-        assert "/accounts/" not in url
+        assert "/accounts/42/transactions" in url
 
 
 class TestGetTags:
