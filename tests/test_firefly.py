@@ -276,6 +276,17 @@ class TestDedupStartDate:
         result = FireflyClient._dedup_start_date(txs)
         assert result == "2025-12-25"  # 20260101 - 7 days
 
+    def test_iso_date_format_parsed(self):
+        txs = [make_tx(date="2026-02-15"), make_tx(date="2026-03-01")]
+        result = FireflyClient._dedup_start_date(txs, buffer_days=7)
+        assert result == "2026-02-08"  # 2026-02-15 - 7 days
+
+    def test_unknown_date_format_returns_none(self, caplog):
+        txs = [make_tx(date="15.02.2026")]
+        result = FireflyClient._dedup_start_date(txs)
+        assert result is None
+        assert "Could not parse" in caplog.text
+
     def test_fetch_uses_start_date_param(self):
         """_fetch_existing_data passes start_date to the Firefly API."""
         client = FireflyClient(CONFIG)
