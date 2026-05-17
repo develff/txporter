@@ -301,22 +301,27 @@ class FireflyClient:
                 break
             for row in rows:
                 for split in row.get("attributes", {}).get("transactions", []):
-                    ext_id = split.get("external_id", "")
-                    if ext_id:
-                        external_ids.add(ext_id)
-                    if ext_id.startswith("txporter:"):
-                        date = (split.get("date") or "")[:10]
-                        try:
-                            amt = f"{abs(float(split.get('amount', 0))):.2f}"
-                        except (ValueError, TypeError):
-                            amt = ""
-                        if date and amt:
-                            aq_date_amounts.add((date, amt))
+                    self._collect_split_data(split, external_ids, aq_date_amounts)
             pagination = data.get("meta", {}).get("pagination", {})
             if page >= pagination.get("total_pages", 1):
                 break
             page += 1
         return external_ids, aq_date_amounts
+
+    @staticmethod
+    def _collect_split_data(split: dict, external_ids: set, aq_date_amounts: set) -> None:
+        ext_id = split.get("external_id", "")
+        if ext_id:
+            external_ids.add(ext_id)
+        if not ext_id.startswith("txporter:"):
+            return
+        date = (split.get("date") or "")[:10]
+        try:
+            amt = f"{abs(float(split.get('amount', 0))):.2f}"
+        except (ValueError, TypeError):
+            amt = ""
+        if date and amt:
+            aq_date_amounts.add((date, amt))
 
     @staticmethod
     def _build_account_routing(is_withdrawal: bool, account_name: str,

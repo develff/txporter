@@ -1946,7 +1946,7 @@ async function runCsvImport(mappingId) {
       potDups > 0 ? `${potDups} possible duplicates (not imported)` : "",
       errors  > 0 ? `${errors} errors` : "",
     ].filter(Boolean).join(" · ");
-    const icon = errors > 0 ? "⚠️" : potDups > 0 ? "⚠️" : "✅";
+    const icon = (errors > 0 || potDups > 0) ? "⚠️" : "✅";
     const potDupNote = potDups > 0
       ? `<p style="color:var(--warning);margin-top:8px"><strong>${potDups} transactions not imported</strong>: same date &amp; amount already exists from AqBanking sync. Check the import report.</p>` : "";
     const reportLink = data.report_url
@@ -1990,7 +1990,11 @@ function viewCsvProfile(mappingId) {
   const m = csvState.mappings.find(x => x.id === mappingId);
   if (!m) return;
   const fields = Object.entries(m.fields || {}).map(([k, v]) => {
-    const src = v.column ? `column: ${v.column}` : v.columns ? `columns: ${v.columns.join(", ")}` : v.value !== undefined ? `fixed: ${v.value}` : "—";
+    let src;
+    if (v.column) src = `column: ${v.column}`;
+    else if (v.columns) src = `columns: ${v.columns.join(", ")}`;
+    else if (v.value === undefined) src = "—";
+    else src = `fixed: ${v.value}`;
     return `<tr><td style="padding:4px 10px 4px 0;font-weight:500">${esc(k)}</td><td style="padding:4px 0;color:var(--text-muted)">${esc(src)}</td></tr>`;
   }).join("");
   const strategy = m.external_id_strategy ? `<div style="margin-top:12px;font-size:12px;color:var(--text-muted)">external_id: ${esc(m.external_id_strategy.type)}</div>` : "";

@@ -372,12 +372,11 @@ def parse_and_map(file_bytes: bytes, mapping: dict) -> list:
                                                end_to_end_ref=sepa_ref,
                                                remote_iban=remote_iban, remote_name=remote_name,
                                                description=description)
-            elif strategy.get("type") == "txporter_iban_header":
-                if fixed_iban:
-                    ext_id = build_external_id(fixed_iban, date_compact, amount, currency,
-                                               end_to_end_ref=sepa_ref,
-                                               remote_iban=remote_iban, remote_name=remote_name,
-                                               description=description)
+            elif strategy.get("type") == "txporter_iban_header" and fixed_iban:
+                ext_id = build_external_id(fixed_iban, date_compact, amount, currency,
+                                           end_to_end_ref=sepa_ref,
+                                           remote_iban=remote_iban, remote_name=remote_name,
+                                           description=description)
             if not ext_id:
                 ext_id = build_external_id(f"{mapping_id}:{account_name}", date_compact, amount, currency,
                                            remote_iban=remote_iban, remote_name=remote_name,
