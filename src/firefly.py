@@ -66,6 +66,8 @@ def _build_notes(tx: dict) -> str:
 
 
 class FireflyClient:
+    _TIMEOUT = 30
+
     def __init__(self, config: dict):
         self.base_url = config["url"].rstrip("/")
         self.token = config["token"]
@@ -84,6 +86,7 @@ class FireflyClient:
                 f"{self.base_url}/api/v1/tags",
                 headers=self.headers,
                 params={"limit": 100, "page": page},
+                timeout=self._TIMEOUT,
             )
             if not response.ok:
                 break
@@ -183,6 +186,7 @@ class FireflyClient:
             f"{self.base_url}/api/v1/accounts",
             headers=self.headers,
             params={"type": "asset", "limit": 100},
+            timeout=self._TIMEOUT,
         )
         if response.ok:
             for a in response.json().get("data", []):
@@ -215,6 +219,7 @@ class FireflyClient:
             f"{self.base_url}/api/v1/accounts",
             headers=self.headers,
             json=payload,
+            timeout=self._TIMEOUT,
         )
         if resp.ok:
             logger.info("Created asset account: %s", name)
@@ -236,6 +241,7 @@ class FireflyClient:
             f"{self.base_url}/api/v1/accounts/{account_id}",
             headers=self.headers,
             json=payload,
+            timeout=self._TIMEOUT,
         )
         if resp.ok:
             logger.info("Backfilled IBAN %s on Firefly account %s", iban, account_id)
@@ -290,6 +296,7 @@ class FireflyClient:
                 f"{self.base_url}/api/v1/transactions",
                 headers=self.headers,
                 params={**params_base, "page": page},
+                timeout=self._TIMEOUT,
             )
             if not response.ok:
                 logger.warning("Could not fetch global transactions (page %d): %s",
@@ -398,6 +405,7 @@ class FireflyClient:
             f"{self.base_url}/api/v1/transactions",
             headers=self.headers,
             json={"transactions": [split]},
+            timeout=self._TIMEOUT,
         )
         if not response.ok:
             data = response.json() if response.content else {}
