@@ -4,12 +4,13 @@ Parses CSV files and maps columns to the Firefly III transaction format.
 """
 
 import csv
-import hashlib
 import io
 import json
 import logging
 import os
 from datetime import datetime
+
+from external_id import build_external_id
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +19,7 @@ MAPPINGS_PATH = os.environ.get(
     "TXPORTER_CSV_MAPPINGS",
     os.path.join(os.path.dirname(_CONFIG_PATH), "csv_mappings.json"),
 )
+_BUILTIN_PROFILES_PATH = os.path.join(os.path.dirname(__file__), "bank_csv_profiles.json")
 
 # Ordered list of Firefly fields available for CSV mapping.
 # transform: "date" | "amount" | None — controls which extra options the UI shows.
@@ -39,17 +41,106 @@ FIREFLY_FIELDS = [
 ]
 
 
+def load_builtin_profiles() -> list:
+    """Return built-in bank CSV profiles shipped with txporter."""
+    if not os.path.exists(_BUILTIN_PROFILES_PATH):
+        return []
+    with open(_BUILTIN_PROFILES_PATH, encoding="utf-8") as f:
+        return json.load(f)
+
+
 def load_mappings() -> list:
+    """Return the user's active mapping list.
+
+    Entries are either pinned built-in profiles (stored as {id, pinned:true}
+    and resolved to their full definition here) or user-created custom profiles.
+    Built-in profiles that have not been explicitly pinned are NOT included.
+    """
+    builtins = {p["id"]: p for p in load_builtin_profiles()}
+    if not os.path.exists(MAPPINGS_PATH):
+        return []
+    with open(MAPPINGS_PATH, encoding="utf-8") as f:
+        stored = json.load(f)
+    result = []
+    for entry in stored:
+        if entry.get("pinned") and entry.get("id") in builtins:
+            result.append(builtins[entry["id"]])
+        elif not entry.get("pinned"):
+            result.append(entry)
+    return result
+
+
+def load_available_builtins() -> list:
+    """Return built-in profiles not yet in the user's list."""
+    pinned_ids = {
+        e["id"] for e in (_load_raw_mappings()) if e.get("pinned")
+    }
+    return [p for p in load_builtin_profiles() if p["id"] not in pinned_ids]
+
+
+def _load_raw_mappings() -> list:
     if not os.path.exists(MAPPINGS_PATH):
         return []
     with open(MAPPINGS_PATH, encoding="utf-8") as f:
         return json.load(f)
 
 
+def pin_builtin(profile_id: str) -> bool:
+    """Add a built-in profile to the user's list. Returns False if already pinned."""
+    raw = _load_raw_mappings()
+    if any(e.get("id") == profile_id for e in raw):
+        return False
+    raw.append({"id": profile_id, "pinned": True})
+    _save_raw_mappings(raw)
+    return True
+
+
 def save_mappings(mappings: list) -> None:
+    """Persist the user's mapping list, storing built-in entries as pin stubs."""
+    builtins = {p["id"] for p in load_builtin_profiles()}
+    to_save = [
+        {"id": m["id"], "pinned": True} if m.get("id") in builtins else m
+        for m in mappings
+    ]
+    _save_raw_mappings(to_save)
+
+
+def _save_raw_mappings(raw: list) -> None:
     os.makedirs(os.path.dirname(os.path.abspath(MAPPINGS_PATH)), exist_ok=True)
     with open(MAPPINGS_PATH, "w", encoding="utf-8") as f:
-        json.dump(mappings, f, indent=2, ensure_ascii=False)
+        json.dump(raw, f, indent=2, ensure_ascii=False)
+
+
+def unpin_or_delete_mapping(mapping_id: str) -> bool:
+    """Remove a mapping from the user's list (unpins builtins, deletes custom). Returns False if not found."""
+    raw = _load_raw_mappings()
+    updated = [e for e in raw if e.get("id") != mapping_id]
+    if len(updated) == len(raw):
+        return False
+    _save_raw_mappings(updated)
+    return True
+
+
+def _iban_from_header(file_bytes: bytes, encoding: str, delimiter: str,
+                      header_row: int, header_col: int) -> str | None:
+    """Extract an IBAN value from a pre-data header row (before skip_rows)."""
+    text = file_bytes.decode(encoding, errors="replace")
+    reader = csv.reader(io.StringIO(text), delimiter=delimiter)
+    for i, row in enumerate(reader):
+        if i == header_row:
+            return row[header_col].strip() if len(row) > header_col else None
+    return None
+
+
+def _iban_from_blz(blz: str, account_number: str) -> str | None:
+    """Compute a German IBAN from BLZ and account number."""
+    acct_nr = account_number.strip().lstrip("0") or "0"
+    acct_nr = acct_nr.zfill(10)
+    if len(blz) != 8 or not blz.isdigit() or not acct_nr.isdigit() or len(acct_nr) > 10:
+        return None
+    numeric_str = blz + acct_nr + "1314" + "00"
+    check_digits = 98 - int(numeric_str) % 97
+    return f"DE{check_digits:02d}{blz}{acct_nr}"
 
 
 def _open_csv(file_bytes: bytes, encoding: str, delimiter: str,
@@ -153,9 +244,17 @@ def preview_csv(file_bytes: bytes, delimiter: str = ",", encoding: str = "utf-8"
 
 
 def _resolve(row: dict, field_cfg: dict) -> str:
-    """Return the field value: fixed 'value' key takes priority over a 'column' lookup."""
+    """Return the field value: fixed 'value' key takes priority over a 'column' lookup.
+
+    When 'columns' (list) is given, values are concatenated with the 'join' separator
+    (default space), skipping empty entries.
+    """
     if "value" in field_cfg:
         return str(field_cfg["value"])
+    if "columns" in field_cfg:
+        sep = field_cfg.get("join", " ")
+        parts = [row.get(col, "") or "" for col in field_cfg["columns"]]
+        return sep.join(p.strip() for p in parts if p.strip())
     col = field_cfg.get("column", "")
     return (row.get(col) or "") if col else ""
 
@@ -187,16 +286,30 @@ def _parse_amount(value: str, decimal_sep: str = ".", thousands_sep: str = "") -
         return 0.0
 
 
-def build_external_id(mapping_id: str, account_name: str, date: str,
-                      amount: float, currency: str, description: str) -> str:
-    """Build a stable external_id following the same convention as HBCI imports.
 
-    Format: csv:{mapping_id}:{account_name}:{date}:{amount:.2f}:{currency}:{desc_hash}
-    The description hash (first 8 hex chars of SHA-256) acts as the uniqueness
-    component, analogous to bank_reference in the HBCI scheme.
+def resolve_account_iban(file_bytes: bytes, mapping: dict) -> str | None:
+    """Return the IBAN for the account described by a mapping profile, or None.
+
+    For txporter_iban: uses the fixed BLZ + the account number from the first data row.
+    For txporter_iban_header: reads the IBAN directly from the pre-data header cell.
     """
-    desc_hash = hashlib.sha256(description.encode()).hexdigest()[:8]
-    return ":".join(["csv", mapping_id, account_name, date, f"{amount:.2f}", currency, desc_hash])
+    strategy = mapping.get("external_id_strategy", {})
+    encoding = mapping.get("encoding", "utf-8")
+    delimiter = mapping.get("delimiter", ",")
+    skip_rows = int(mapping.get("skip_rows", 0))
+
+    if strategy.get("type") == "txporter_iban_header":
+        return _iban_from_header(file_bytes, encoding, delimiter,
+                                 strategy.get("header_row", 0),
+                                 strategy.get("header_col", 1))
+
+    if strategy.get("type") == "txporter_iban":
+        headers, f = _open_csv(file_bytes, encoding, delimiter, skip_rows)
+        for row in _iter_rows(f, headers, delimiter):
+            acct_nr = row.get(strategy.get("kontonummer_column", ""), "") or ""
+            return _iban_from_blz(strategy.get("blz", ""), acct_nr)
+
+    return None
 
 
 def parse_and_map(file_bytes: bytes, mapping: dict) -> list:
@@ -214,6 +327,15 @@ def parse_and_map(file_bytes: bytes, mapping: dict) -> list:
     fields = mapping.get("fields", {})
 
     _headers, f = _open_csv(file_bytes, encoding, delimiter, skip_rows)
+
+    strategy = mapping.get("external_id_strategy", {})
+    fixed_iban = None
+    if strategy.get("type") == "txporter_iban_header":
+        fixed_iban = _iban_from_header(
+            file_bytes, encoding, delimiter,
+            strategy.get("header_row", 0),
+            strategy.get("header_col", 1),
+        )
 
     transactions = []
     for row in _iter_rows(f, _headers, delimiter, join_multiline):
@@ -233,12 +355,32 @@ def parse_and_map(file_bytes: bytes, mapping: dict) -> list:
 
         currency = _resolve(row, fields.get("currency_code", {})) or "EUR"
         description = _resolve(row, fields.get("description", {}))
+        remote_iban = _resolve(row, fields.get("remote_iban", {}))
+        remote_name = _resolve(row, fields.get("remote_name", {}))
 
         # ── external_id ───────────────────────────────────────────────────────
         ext_id_cfg = fields.get("external_id", {})
         ext_id = _resolve(row, ext_id_cfg) if ext_id_cfg else ""
         if not ext_id:
-            ext_id = build_external_id(mapping_id, account_name, date, amount, currency, description)
+            sepa_ref = _resolve(row, fields.get("sepa_ct_id", {})).strip()
+            date_compact = date.replace("-", "")
+            if strategy.get("type") == "txporter_iban":
+                acct_nr = row.get(strategy.get("kontonummer_column", ""), "") or ""
+                iban = _iban_from_blz(strategy.get("blz", ""), acct_nr)
+                if iban:
+                    ext_id = build_external_id(iban, date_compact, amount, currency,
+                                               end_to_end_ref=sepa_ref,
+                                               remote_iban=remote_iban, remote_name=remote_name,
+                                               description=description)
+            elif strategy.get("type") == "txporter_iban_header" and fixed_iban:
+                ext_id = build_external_id(fixed_iban, date_compact, amount, currency,
+                                           end_to_end_ref=sepa_ref,
+                                           remote_iban=remote_iban, remote_name=remote_name,
+                                           description=description)
+            if not ext_id:
+                ext_id = build_external_id(f"{mapping_id}:{account_name}", date_compact, amount, currency,
+                                           remote_iban=remote_iban, remote_name=remote_name,
+                                           description=description)
 
         tx = {
             "external_id": ext_id,
@@ -249,7 +391,7 @@ def parse_and_map(file_bytes: bytes, mapping: dict) -> list:
         }
 
         # ── Optional string fields ────────────────────────────────────────────
-        for field_id in ("remote_name", "foreign_currency_code",
+        for field_id in ("remote_name", "remote_iban", "remote_bic", "foreign_currency_code",
                          "category_name", "budget_name", "tags",
                          "sepa_ct_id", "internal_reference", "notes"):
             cfg = fields.get(field_id, {})

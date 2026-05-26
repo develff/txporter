@@ -1,0 +1,96 @@
+[
+  {
+    "id": "1822direkt",
+    "name": "1822direkt",
+    "builtin": true,
+    "delimiter": ";",
+    "encoding": "cp1252",
+    "skip_rows": 0,
+    "join_multiline": false,
+    "fields": {
+      "date": {
+        "column": "Buchungstag",
+        "date_format": "%d.%m.%Y"
+      },
+      "book_date": {
+        "column": "Wertstellung",
+        "date_format": "%d.%m.%Y"
+      },
+      "amount": {
+        "column": "Soll/Haben",
+        "decimal_sep": ",",
+        "thousands_sep": "."
+      },
+      "currency_code": {
+        "value": "EUR"
+      },
+      "description": {
+        "columns": [
+          "Vwz.0", "Vwz.1", "Vwz.2", "Vwz.3", "Vwz.4",
+          "Vwz.5", "Vwz.6", "Vwz.7", "Vwz.8", "Vwz.9",
+          "Vwz.10", "Vwz.11", "Vwz.12", "Vwz.13", "Vwz.14",
+          "Vwz.15", "Vwz.16", "Vwz.17"
+        ],
+        "join": " "
+      },
+      "remote_name": {
+        "column": "Empfänger/Auftraggeber Name"
+      },
+      "remote_iban": {
+        "column": "Empfänger/Auftraggeber IBAN"
+      },
+      "remote_bic": {
+        "column": "Empfänger/Auftraggeber BIC"
+      },
+      "sepa_ct_id": {
+        "column": "End-to-End-Identifikation"
+      }
+    },
+    "external_id_strategy": {
+      "type": "txporter_iban",
+      "blz": "50050201",
+      "kontonummer_column": "Kontonummer"
+    }
+  }
+  ,
+  {
+    "id": "dkb-girokonto",
+    "name": "DKB Girokonto",
+    "builtin": true,
+    "delimiter": ";",
+    "encoding": "utf-8",
+    "skip_rows": 4,
+    "join_multiline": false,
+    "fields": {
+      "date": {
+        "column": "Buchungsdatum",
+        "date_format": "%d.%m.%y"
+      },
+      "amount": {
+        "column": "Betrag (€)",
+        "decimal_sep": ",",
+        "thousands_sep": "."
+      },
+      "currency_code": {
+        "value": "EUR"
+      },
+      "description": {
+        "column": "Verwendungszweck"
+      },
+      "remote_name": {
+        "column": "Zahlungsempfänger*in"
+      },
+      "remote_iban": {
+        "column": "IBAN"
+      },
+      "sepa_ct_id": {
+        "column": "Kundenreferenz"
+      }
+    },
+    "external_id_strategy": {
+      "type": "txporter_iban_header",
+      "header_row": 0,
+      "header_col": 1
+    }
+  }
+]

@@ -803,35 +803,71 @@ def csv_import_route():
     except ValueError:
         return jsonify({"error": "Field 'mapping' is not valid JSON"}), 400
 
-    from csv_import import parse_and_map
     try:
-        transactions = parse_and_map(file.read(), mapping)
+        from csv_import import parse_and_map, resolve_account_iban
+        file_bytes = file.read()
+        transactions = parse_and_map(file_bytes, mapping)
     except Exception as e:
         logger.exception("CSV parse error")
         return jsonify({"error": str(e)}), 400
 
-    account = {"name": mapping.get("account_name", "")}
-    stats = _forward_to_targets(transactions, account)
+    try:
+        iban = resolve_account_iban(file_bytes, mapping)
+        account_name = mapping.get("account_name") or mapping.get("name", "")
+        mapping_id = mapping.get("id", account_name or "csv")
+        account = {"id": mapping_id, "name": account_name, "iban": iban or ""}
+        stats = _forward_to_targets(transactions, account)
+    except Exception as e:
+        logger.exception("CSV import error")
+        return jsonify({"error": str(e)}), 500
     return jsonify({"status": "ok", "found": len(transactions), **stats})
 
 
 @app.route("/csv/mappings", methods=["GET"])
 def csv_mappings_list():
-    """List all saved CSV mapping profiles."""
+    """List the user's active CSV mapping profiles (pinned built-ins + custom)."""
     from csv_import import load_mappings
     return jsonify(load_mappings())
 
 
+@app.route("/csv/mappings/available", methods=["GET"])
+def csv_mappings_available():
+    """List built-in profiles not yet added to the user's list."""
+    from csv_import import load_available_builtins
+    return jsonify(load_available_builtins())
+
+
+@app.route("/csv/mappings/pin", methods=["POST"])
+def csv_mappings_pin():
+    """Add a built-in profile to the user's list by id."""
+    body = request.get_json(force=True, silent=True) or {}
+    profile_id = body.get("id", "").strip()
+    if not profile_id:
+        return jsonify({"error": "Field 'id' is required"}), 400
+    from csv_import import load_builtin_profiles, pin_builtin
+    builtin_ids = {p["id"] for p in load_builtin_profiles()}
+    if profile_id not in builtin_ids:
+        return jsonify({"error": f"Unknown built-in profile '{profile_id}'"}), 404
+    if not pin_builtin(profile_id):
+        return jsonify({"error": f"Profile '{profile_id}' is already in your list"}), 409
+    profile = next(p for p in load_builtin_profiles() if p["id"] == profile_id)
+    return jsonify(profile)
+
+
 @app.route("/csv/mappings", methods=["POST"])
 def csv_mappings_save():
-    """Save or update a CSV mapping profile.
+    """Save or update a custom CSV mapping profile.
 
     Body must include 'id' and 'name'. Replaces any existing profile with the same id.
+    Use POST /csv/mappings/pin to add built-in profiles instead.
     """
     body = request.get_json(force=True, silent=True) or {}
     if not body.get("id") or not body.get("name"):
         return jsonify({"error": "Fields 'id' and 'name' are required"}), 400
-    from csv_import import load_mappings, save_mappings
+    from csv_import import load_builtin_profiles, load_mappings, save_mappings
+    builtin_ids = {p["id"] for p in load_builtin_profiles()}
+    if body["id"] in builtin_ids:
+        return jsonify({"error": f"'{body['id']}' is a built-in profile — use POST /csv/mappings/pin to add it"}), 409
     mappings = load_mappings()
     mappings = [body if m["id"] == body["id"] else m for m in mappings]
     if not any(m["id"] == body["id"] for m in mappings):
@@ -842,13 +878,13 @@ def csv_mappings_save():
 
 @app.route("/csv/mappings/<mapping_id>", methods=["DELETE"])
 def csv_mappings_delete(mapping_id):
-    """Delete a saved CSV mapping profile by id."""
-    from csv_import import load_mappings, save_mappings
-    mappings = load_mappings()
-    updated = [m for m in mappings if m["id"] != mapping_id]
-    if len(updated) == len(mappings):
+    """Remove a mapping from the user's list.
+
+    For built-in profiles this unpins them; for custom profiles this deletes them.
+    """
+    from csv_import import unpin_or_delete_mapping
+    if not unpin_or_delete_mapping(mapping_id):
         return jsonify({"error": f"No mapping found for '{mapping_id}'"}), 404
-    save_mappings(updated)
     return jsonify({"status": "ok"})
 
 
@@ -999,7 +1035,7 @@ def _forward_to_targets(transactions: list, account: dict) -> dict:
         elif target_name == "csv":
             path = target_config["path"]
             os.makedirs(path, exist_ok=True)
-            filename = f"{path}/{account['id']}.csv"
+            filename = f"{path}/{account.get('id', 'unknown')}.csv"
             with open(filename, "w", newline="") as f:
                 writer = csv_module.DictWriter(f, fieldnames=["date", "amount", "description", "iban"], extrasaction="ignore")
                 writer.writeheader()

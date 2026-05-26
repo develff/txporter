@@ -14,9 +14,21 @@ import logging
 from datetime import datetime, timedelta
 from urllib.parse import unquote
 
+from external_id import build_external_id
+
 logger = logging.getLogger(__name__)
 
 PINFILE = os.environ.get("TXPORTER_PINFILE", "/home/txporter/config/pinfile")
+
+
+def _iban_from_blz(blz: str, account_number: str) -> str | None:
+    """Compute a German IBAN from BLZ and bare account number."""
+    acct_nr = account_number.strip().zfill(10)
+    if len(blz) != 8 or not blz.isdigit() or not acct_nr.isdigit() or len(acct_nr) > 10:
+        return None
+    numeric_str = blz + acct_nr + "1314" + "00"
+    check_digits = 98 - int(numeric_str) % 97
+    return f"DE{check_digits:02d}{blz}{acct_nr}"
 _AQBANKING_DIR = os.path.expanduser("~/.aqbanking")
 
 # aqbanking-cli uses a file lock on its config directory, so only one process
@@ -70,20 +82,6 @@ def _decode_amount_eur(raw: str) -> tuple[float, str]:
     return float(amount_part), currency
 
 
-def _external_id(local_account: str, date: str, amount_eur: float, currency: str,
-                 bank_reference: str, primanota: str) -> str:
-    parts = ["aqbanking", "fints", local_account, date, f"{amount_eur:.2f}:{currency}"]
-    if bank_reference:
-        parts.append(bank_reference)
-    if primanota and primanota != "0":
-        parts.append(primanota)
-    if not bank_reference and (not primanota or primanota == "0"):
-        logger.warning(
-            "Transaction on %s for %.2f:%s has neither bankReference nor primanota — "
-            "external_id may not be unique",
-            date, amount_eur, currency,
-        )
-    return ":".join(parts)
 
 
 def _parse_ctx(output: str) -> list[dict]:
@@ -106,14 +104,21 @@ def _parse_ctx(output: str) -> list[dict]:
             continue
 
         amount_eur, currency = _decode_amount_eur(raw_value.group(1))
-        local_account = field("localAccountNumber")
+        local_bank_code = field("localBankCode")
+        local_account_number = field("localAccountNumber")
+        local_account = _iban_from_blz(local_bank_code, local_account_number) or local_account_number
         date = field("date")
-        bank_reference = field("bankReference")
+        end_to_end_ref = field("endToEndReference")
         primanota = field("primanota")
+        purpose = field("purpose")
+        remote_iban = field("remoteIban")
+        remote_name = field("remoteName")
 
         tx = {
-            "external_id": _external_id(local_account, date, amount_eur, currency,
-                                         bank_reference, primanota),
+            "external_id": build_external_id(local_account, date, amount_eur, currency,
+                                             end_to_end_ref=end_to_end_ref,
+                                             remote_iban=remote_iban, remote_name=remote_name,
+                                             description=purpose),
             "type": field("type"),
             "sub_type": field("subType"),
             "command": field("command"),
@@ -125,13 +130,13 @@ def _parse_ctx(output: str) -> list[dict]:
             "session_id": field("sessionId"),
             "group_id": field("groupId"),
             "acknowledge": field("acknowledge"),
-            "local_bank_code": field("localBankCode"),
-            "local_account_number": local_account,
+            "local_bank_code": local_bank_code,
+            "local_account_number": local_account_number,
             "remote_bank_code": field("remoteBankCode"),
             "remote_account_number": field("remoteAccountNumber"),
-            "remote_iban": field("remoteIban"),
+            "remote_iban": remote_iban,
             "remote_bic": field("remoteBic"),
-            "remote_name": field("remoteName"),
+            "remote_name": remote_name,
             "date": date,
             "valuta_date": field("valutaDate"),
             "amount_eur": amount_eur,
@@ -141,8 +146,8 @@ def _parse_ctx(output: str) -> list[dict]:
             "transaction_key": field("transactionKey"),
             "text_key": field("textKey"),
             "primanota": primanota,
-            "purpose": field("purpose"),
-            "bank_reference": bank_reference,
+            "purpose": purpose,
+            "bank_reference": field("bankReference"),
             "end_to_end_reference": field("endToEndReference"),
             "sequence": field("sequence"),
             "charge": field("charge"),
