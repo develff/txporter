@@ -1,10 +1,14 @@
 """Tests for aqbanking CTX parser."""
 
 import hashlib
+import threading
+import time
 import pytest
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 from external_id import build_external_id
-from src.aqbanking import _decode_amount_eur, _parse_ctx
+from src.aqbanking import _decode_amount_eur, _parse_ctx, kill_running_proc
+import src.aqbanking as aqbanking_mod
 
 FIXTURE = Path(__file__).parent / "fixtures" / "dkb_sample.ctx"
 
@@ -163,3 +167,97 @@ class TestParseCtx:
         assert tx["sequence"] == "unknown"
         assert tx["vop_result"] == "none"
         assert tx["cycle"] == "0"
+
+
+class TestKillRunningProc:
+    def setup_method(self):
+        aqbanking_mod._running_proc = None
+        aqbanking_mod._running_proc_start = None
+
+    def teardown_method(self):
+        aqbanking_mod._running_proc = None
+        aqbanking_mod._running_proc_start = None
+
+    def test_returns_false_when_nothing_running(self):
+        assert kill_running_proc() is False
+
+    def test_returns_false_when_proc_already_dead(self):
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 0
+        aqbanking_mod._running_proc = mock_proc
+        aqbanking_mod._running_proc_start = time.monotonic()
+        assert kill_running_proc() is False
+        assert aqbanking_mod._running_proc is None
+
+    def test_kills_live_process_and_returns_true(self):
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        aqbanking_mod._running_proc = mock_proc
+        aqbanking_mod._running_proc_start = time.monotonic()
+        result = kill_running_proc()
+        assert result is True
+        mock_proc.kill.assert_called_once()
+        mock_proc.wait.assert_called_once()
+        assert aqbanking_mod._running_proc is None
+        assert aqbanking_mod._running_proc_start is None
+
+    def test_clears_state_even_if_kill_raises(self):
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        mock_proc.kill.side_effect = OSError("no such process")
+        aqbanking_mod._running_proc = mock_proc
+        aqbanking_mod._running_proc_start = time.monotonic()
+        kill_running_proc()
+        assert aqbanking_mod._running_proc is None
+        assert aqbanking_mod._running_proc_start is None
+
+
+class TestStartFetchStaleKill:
+    """start_fetch() must auto-kill processes that have exceeded the stale timeout."""
+
+    def setup_method(self):
+        aqbanking_mod._running_proc = None
+        aqbanking_mod._running_proc_start = None
+
+    def teardown_method(self):
+        aqbanking_mod._running_proc = None
+        aqbanking_mod._running_proc_start = None
+
+    def test_raises_when_process_is_young(self):
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        aqbanking_mod._running_proc = mock_proc
+        aqbanking_mod._running_proc_start = time.monotonic()
+
+        account = {"id": "acc", "type": "fints", "blz": "12030000",
+                   "url": "https://bank.example", "login": "user",
+                   "hbci_version": 300, "aqbanking_id": 1}
+        client = aqbanking_mod.AqBankingClient(account)
+
+        with pytest.raises(RuntimeError, match="already running"):
+            client.start_fetch()
+
+    def test_kills_and_proceeds_when_process_is_stale(self, tmp_path):
+        mock_stale = MagicMock()
+        mock_stale.poll.return_value = None
+        aqbanking_mod._running_proc = mock_stale
+        aqbanking_mod._running_proc_start = time.monotonic() - (aqbanking_mod._STALE_PROC_TIMEOUT + 1)
+
+        account = {"id": "acc", "type": "fints", "blz": "12030000",
+                   "url": "https://bank.example", "login": "user",
+                   "hbci_version": 300, "aqbanking_id": 1}
+        client = aqbanking_mod.AqBankingClient(account)
+
+        fake_proc = MagicMock()
+        fake_proc.poll.return_value = 0
+        fake_proc.returncode = 0
+        fake_proc.stdout = MagicMock()
+        fake_proc.stderr = MagicMock()
+
+        with patch("subprocess.Popen", return_value=fake_proc), \
+             patch.object(client, "_drain_until_push_or_exit", return_value={"status": "ok", "transactions": []}):
+            result = client.start_fetch()
+
+        mock_stale.kill.assert_called_once()
+        assert result["status"] == "ok"
+        assert aqbanking_mod._running_proc is None  # cleared after ok

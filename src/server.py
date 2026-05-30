@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 
 import requests as _requests
 from flask import Flask, jsonify, render_template, request, send_file
-from aqbanking import AqBankingClient, aqbanking_is_busy
+from aqbanking import AqBankingClient, aqbanking_is_busy, kill_running_proc
 from config import load_config, ensure_config_exists
 import setup as bank_setup
 import logging
@@ -351,6 +351,20 @@ def confirm_one(account_id):
     dry_run = bool(body.get("dry_run", False))
     export_format = (body.get("export_format") or "").lower() or None
     return jsonify(complete_sync(account_id, dry_run=dry_run, export_format=export_format))
+
+
+@app.route("/sync/reset", methods=["POST"])
+def reset_sync():
+    """Kill any running aqbanking-cli process and clear all pending syncs.
+
+    Use this to recover from a hung sync without restarting the container.
+    Returns {"killed": true/false, "pending_cleared": [account_id, ...]}.
+    """
+    killed = kill_running_proc()
+    cleared = list(_pending_syncs.keys())
+    _pending_syncs.clear()
+    logger.warning("Sync reset: killed=%s, cleared pending=%s", killed, cleared)
+    return jsonify({"killed": killed, "pending_cleared": cleared})
 
 
 @app.route("/accounts", methods=["GET"])
