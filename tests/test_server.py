@@ -698,6 +698,53 @@ class TestCompleteSync:
         assert "network error" in result["message"]
 
 
+class TestSyncReset:
+    def setup_method(self):
+        import src.server as server_mod
+        import src.aqbanking as aqbanking_mod
+        server_mod._pending_syncs.clear()
+        aqbanking_mod._running_proc = None
+        aqbanking_mod._running_proc_start = None
+
+    def teardown_method(self):
+        import src.server as server_mod
+        import src.aqbanking as aqbanking_mod
+        server_mod._pending_syncs.clear()
+        aqbanking_mod._running_proc = None
+        aqbanking_mod._running_proc_start = None
+
+    def test_reset_with_nothing_running(self, sync_client):
+        resp = sync_client.post("/sync/reset")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["killed"] is False
+        assert data["pending_cleared"] == []
+
+    def test_reset_clears_pending_syncs(self, sync_client):
+        import src.server as server_mod
+        server_mod._pending_syncs["consorsbank"] = {"client": MagicMock(), "account": {}}
+        resp = sync_client.post("/sync/reset")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert "consorsbank" in data["pending_cleared"]
+        assert server_mod._pending_syncs == {}
+
+    def test_reset_kills_running_process(self, sync_client):
+        import src.aqbanking as aqbanking_mod
+        import time
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        aqbanking_mod._running_proc = mock_proc
+        aqbanking_mod._running_proc_start = time.monotonic()
+
+        resp = sync_client.post("/sync/reset")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["killed"] is True
+        mock_proc.kill.assert_called_once()
+        assert aqbanking_mod._running_proc is None
+
+
 class TestSaveLastSync:
     def test_exception_is_swallowed(self):
         import src.server as server_mod

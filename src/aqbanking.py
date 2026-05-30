@@ -36,13 +36,42 @@ _AQBANKING_DIR = os.path.expanduser("~/.aqbanking")
 # across two method calls, so a crashed/abandoned process never blocks future
 # syncs — if the process is dead, poll() is not None and we allow a new one.
 _running_proc: "subprocess.Popen | None" = None
-_running_proc_guard = threading.Lock()  # guards _running_proc only
+_running_proc_start: float | None = None  # monotonic time when _running_proc was set
+_running_proc_guard = threading.Lock()  # guards _running_proc and _running_proc_start
+
+# Processes alive longer than this are considered stale and killed automatically.
+_STALE_PROC_TIMEOUT = int(os.environ.get("TXPORTER_STALE_PROC_TIMEOUT", "300"))
 
 
 def aqbanking_is_busy() -> bool:
     """Return True if an aqbanking-cli process is currently running."""
     with _running_proc_guard:
         return _running_proc is not None and _running_proc.poll() is None
+
+
+def kill_running_proc() -> bool:
+    """Kill any running aqbanking-cli process and clear the global guard.
+
+    Returns True if a process was killed, False if nothing was running.
+    Safe to call at any time; acquires _running_proc_guard internally.
+    """
+    global _running_proc, _running_proc_start
+    with _running_proc_guard:
+        if _running_proc is None or _running_proc.poll() is not None:
+            _running_proc = None
+            _running_proc_start = None
+            return False
+        try:
+            _running_proc.kill()
+            _running_proc.wait(timeout=5)
+            logger.warning("Killed stale aqbanking-cli process (pid=%s)", _running_proc.pid)
+        except Exception as e:
+            logger.warning("Error killing aqbanking-cli process: %s", e)
+        finally:
+            _running_proc = None
+            _running_proc_start = None
+        _clear_stale_locks()
+        return True
 
 
 def _clear_stale_locks() -> None:
@@ -220,12 +249,25 @@ class AqBankingClient:
         if to_date:
             cmd.insert(-1, f"--todate={to_date.replace('-', '')}")
 
-        global _running_proc
+        global _running_proc, _running_proc_start
         with _running_proc_guard:
             if _running_proc is not None and _running_proc.poll() is None:
-                raise RuntimeError(
-                    "Another aqbanking-cli process is already running — please wait and retry"
+                age = time.monotonic() - (_running_proc_start or 0)
+                if age < _STALE_PROC_TIMEOUT:
+                    raise RuntimeError(
+                        "Another aqbanking-cli process is already running — please wait and retry"
+                    )
+                logger.warning(
+                    "Killing stale aqbanking-cli process after %.0fs (pid=%s)",
+                    age, _running_proc.pid,
                 )
+                try:
+                    _running_proc.kill()
+                    _running_proc.wait(timeout=5)
+                except Exception as e:
+                    logger.warning("Error killing stale process: %s", e)
+                _running_proc = None
+                _running_proc_start = None
             _clear_stale_locks()
             logger.info("Running: %s", " ".join(cmd))
             self._proc = subprocess.Popen(
@@ -234,6 +276,7 @@ class AqBankingClient:
             self._stdout_buf = b""
             self._stderr_buf = b""
             _running_proc = self._proc
+            _running_proc_start = time.monotonic()
 
         try:
             result = self._drain_until_push_or_exit(_DRAIN_TIMEOUT)
